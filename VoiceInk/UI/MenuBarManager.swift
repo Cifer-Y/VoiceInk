@@ -74,20 +74,6 @@ final class MenuBarManager {
         languageItem.submenu = languageMenu
         menu.addItem(languageItem)
 
-        // Speech Engine
-        let engineLabel = settings.useWhisper ? "Whisper (\(settings.whisperModel))" : "Apple Speech"
-        let engineItem = NSMenuItem(title: "Engine: \(engineLabel)", action: nil, keyEquivalent: "")
-        engineItem.isEnabled = false
-        menu.addItem(engineItem)
-
-        // LLM Refinement toggle
-        let llmLabel = settings.llmEnabled ? "LLM Refinement: On" : "LLM Refinement: Off"
-        let llmToggleItem = NSMenuItem(title: llmLabel, action: #selector(toggleLLM(_:)), keyEquivalent: "")
-        llmToggleItem.target = self
-        menu.addItem(llmToggleItem)
-
-        menu.addItem(.separator())
-
         // Settings
         let settingsMenuItem = NSMenuItem(title: "Settings…", action: #selector(openLLMSettings(_:)), keyEquivalent: ",")
         settingsMenuItem.target = self
