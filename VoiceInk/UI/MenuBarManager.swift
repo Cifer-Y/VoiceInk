@@ -11,6 +11,7 @@ final class MenuBarManager {
     var onLLMToggled: ((Bool) -> Void)?
     var onLLMSettingsRequested: (() -> Void)?
     var onCorrectionHistoryRequested: (() -> Void)?
+    var onUserDictionaryRequested: (() -> Void)?
     var onStatsRequested: (() -> Void)?
     var onQuit: (() -> Void)?
 
@@ -23,7 +24,7 @@ final class MenuBarManager {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         if let button = statusItem?.button {
-            button.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "VoiceInk")
+            button.image = NSImage(systemSymbolName: "waveform.circle", accessibilityDescription: "VoiceInk")
             button.image?.size = NSSize(width: 16, height: 16)
         }
 
@@ -35,9 +36,9 @@ final class MenuBarManager {
 
         switch state {
         case .idle, .correctionReady, .composing:
-            button.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "VoiceInk")
+            button.image = NSImage(systemSymbolName: "waveform.circle", accessibilityDescription: "VoiceInk")
         case .composingRecording, .recording:
-            button.image = NSImage(systemSymbolName: "mic.badge.plus", accessibilityDescription: "Recording")
+            button.image = NSImage(systemSymbolName: "waveform.circle.fill", accessibilityDescription: "Recording")
         case .refining, .composingRefining:
             button.image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "Refining")
         case .injecting:
@@ -99,6 +100,11 @@ final class MenuBarManager {
         historyItem.target = self
         menu.addItem(historyItem)
 
+        // User Dictionary
+        let dictionaryItem = NSMenuItem(title: "User Dictionary…", action: #selector(openUserDictionary(_:)), keyEquivalent: "")
+        dictionaryItem.target = self
+        menu.addItem(dictionaryItem)
+
         // Usage Stats
         let statsItem = NSMenuItem(title: "Usage Stats…", action: #selector(openStats(_:)), keyEquivalent: "")
         statsItem.target = self
@@ -135,6 +141,10 @@ final class MenuBarManager {
 
     @objc private func openCorrectionHistory(_ sender: NSMenuItem) {
         onCorrectionHistoryRequested?()
+    }
+
+    @objc private func openUserDictionary(_ sender: NSMenuItem) {
+        onUserDictionaryRequested?()
     }
 
     @objc private func openStats(_ sender: NSMenuItem) {

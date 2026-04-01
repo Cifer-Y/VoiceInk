@@ -38,6 +38,10 @@ final class WhisperService {
         FileManager.default.fileExists(atPath: modelPath(for: size).path)
     }
 
+    static func deleteModel(_ size: String) {
+        try? FileManager.default.removeItem(at: modelPath(for: size))
+    }
+
     /// Downloads a Whisper model from Hugging Face. Returns progress via callback.
     static func downloadModel(
         size: String,
@@ -111,7 +115,11 @@ final class WhisperService {
     // MARK: - Transcription
 
     /// Transcribes a 16kHz mono WAV file to text.
-    func transcribe(audioURL: URL, language: String) throws -> String {
+    /// - Parameters:
+    ///   - audioURL: Path to 16kHz mono WAV file.
+    ///   - language: Locale string (e.g. "zh-CN").
+    ///   - initialPrompt: Optional prompt to bias Whisper's decoder toward specific vocabulary.
+    func transcribe(audioURL: URL, language: String, initialPrompt: String = "") throws -> String {
         guard let context else { throw WhisperError.modelLoadFailed }
 
         // Load audio samples (16kHz mono float32)
@@ -125,16 +133,32 @@ final class WhisperService {
         params.print_progress = false
         params.print_realtime = false
         params.print_timestamps = false
+        params.suppress_non_speech_tokens = true
         params.translate = false
         params.single_segment = false
         params.no_timestamps = true
 
         // Set language (map locale to Whisper language code)
         let langCode = whisperLanguage(from: language)
-        let langResult = langCode.withCString { cLang in
-            params.language = cLang
-            return samples.withUnsafeBufferPointer { buffer in
-                whisper_full(context, params, buffer.baseAddress, Int32(samples.count))
+
+        // Run whisper_full inside nested withCString blocks to keep C pointers alive
+        let langResult: Int32
+        if initialPrompt.isEmpty {
+            langResult = langCode.withCString { cLang in
+                params.language = cLang
+                return samples.withUnsafeBufferPointer { buffer in
+                    whisper_full(context, params, buffer.baseAddress, Int32(samples.count))
+                }
+            }
+        } else {
+            langResult = langCode.withCString { cLang in
+                initialPrompt.withCString { cPrompt in
+                    params.language = cLang
+                    params.initial_prompt = cPrompt
+                    return samples.withUnsafeBufferPointer { buffer in
+                        whisper_full(context, params, buffer.baseAddress, Int32(samples.count))
+                    }
+                }
             }
         }
 

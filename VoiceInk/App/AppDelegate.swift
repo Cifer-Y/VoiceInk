@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var llmService = LLMService(settings: settings)
     private let whisperService = WhisperService()
     private let correctionManager = CorrectionManager()
+    private let userDictionary = UserDictionaryManager()
 
     // UI
     private lazy var menuBarManager = MenuBarManager(settings: settings, correctionManager: correctionManager)
@@ -20,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settingsWindowController = SettingsWindowController()
     private let correctionWindowController = CorrectionWindowController()
     private let correctionHistoryWindowController = CorrectionHistoryWindowController()
+    private let userDictionaryWindowController = UserDictionaryWindowController()
     private let statsWindowController = StatsWindowController()
 
     // State
@@ -32,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var composingBuffer: String = ""
     private var recordingStartTime: Date?
     private var whisperRecordingURL: URL?
+    private var currentLoadedWhisperModel: String?
     private var rmsObservation: Any?
 
     // MARK: - Application Lifecycle
@@ -53,12 +56,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menuBarManager.onLLMSettingsRequested = { [weak self] in
             guard let self else { return }
-            self.settingsWindowController.show(settings: self.settings, llmService: self.llmService)
+            self.settingsWindowController.show(settings: self.settings, llmService: self.llmService, whisperService: self.whisperService)
         }
 
         menuBarManager.onCorrectionHistoryRequested = { [weak self] in
             guard let self else { return }
             self.correctionHistoryWindowController.show(correctionManager: self.correctionManager)
+        }
+
+        menuBarManager.onUserDictionaryRequested = { [weak self] in
+            guard let self else { return }
+            self.userDictionaryWindowController.show(dictionaryManager: self.userDictionary)
         }
 
         menuBarManager.onStatsRequested = { [weak self] in
@@ -100,7 +108,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if state == .composing {
             state = .composingRecording
             do {
-                try audioEngine.startRecording(locale: settings.locale)
+                if settings.composingUseWhisper {
+                    whisperRecordingURL = try audioEngine.startRecordingToFile()
+                } else {
+                    try audioEngine.startRecording(locale: settings.locale)
+                }
             } catch {
                 print("[AppDelegate] Composing recording failed: \(error)")
                 state = .composing
@@ -143,10 +155,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state = .composingRefining
             composingPanel.setRecording(false)
 
-            if settings.useWhisper {
+            if settings.composingUseWhisper {
                 let fileURL = audioEngine.stopRecordingToFile()
                 Task {
-                    let text = await transcribeWithWhisper(fileURL: fileURL)
+                    let text = await transcribeWithWhisper(fileURL: fileURL, modelSize: settings.composingWhisperModel)
                     await MainActor.run {
                         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                         if !trimmed.isEmpty {
@@ -184,7 +196,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             hudPanel.updateText("Transcribing...")
 
             Task {
-                let asrText = await transcribeWithWhisper(fileURL: fileURL)
+                let asrText = await transcribeWithWhisper(fileURL: fileURL, modelSize: settings.whisperModel)
                 await MainActor.run {
                     self.processASRResult(asrText)
                 }
@@ -198,15 +210,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Runs Whisper transcription on a background thread.
-    private func transcribeWithWhisper(fileURL: URL?) async -> String {
+    private func transcribeWithWhisper(fileURL: URL?, modelSize: String) async -> String {
         guard let fileURL else { return "" }
         defer { try? FileManager.default.removeItem(at: fileURL) }
 
         do {
-            if !whisperService.isModelLoaded {
-                try whisperService.loadModel(size: settings.whisperModel)
+            if !whisperService.isModelLoaded || currentLoadedWhisperModel != modelSize {
+                whisperService.unloadModel()
+                print("[Whisper] Loading model: \(modelSize)")
+                try whisperService.loadModel(size: modelSize)
+                currentLoadedWhisperModel = modelSize
             }
-            return try whisperService.transcribe(audioURL: fileURL, language: settings.locale)
+            let start = Date()
+            let result = try whisperService.transcribe(
+                audioURL: fileURL,
+                language: settings.locale,
+                initialPrompt: userDictionary.whisperPrompt()
+            )
+            let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
+            print("[Whisper] Transcribed (\(elapsed)): \"\(result)\"")
+            return result
         } catch {
             print("[Whisper] Transcription error: \(error)")
             return ""
@@ -221,13 +244,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        if llmService.isEnabled {
+        if llmService.isShortSentenceEnabled {
             hudPanel.updateText(asrText)
             let examples = correctionManager.selectExamples(for: asrText)
+            let dictSnippet = userDictionary.llmPromptSnippet()
 
             Task {
                 do {
-                    let refined = try await self.llmService.refine(text: asrText, examples: examples)
+                    let refined = try await self.llmService.refine(text: asrText, examples: examples, dictionarySnippet: dictSnippet)
                     await MainActor.run {
                         self.finishWithText(asrText: asrText, llmText: refined, finalText: refined)
                     }
@@ -354,7 +378,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Send to LLM for long-text refinement
-        if llmService.isEnabled {
+        if llmService.isComposingEnabled {
             state = .refining
             hudPanel.show()
             hudPanel.setStatus(.refining)

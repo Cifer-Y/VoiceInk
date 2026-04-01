@@ -8,31 +8,36 @@ final class LLMService {
         self.settings = settings
     }
 
-    var isEnabled: Bool {
-        settings.llmEnabled && settings.isLLMConfigured
+    var isShortSentenceEnabled: Bool {
+        settings.llmEnabled && settings.shortSentenceConfig.isConfigured
     }
 
-    /// Refines transcription text using LLM.
-    func refine(text: String, examples: [CorrectionEntry]) async throws -> String {
-        guard isEnabled else { return text }
+    var isComposingEnabled: Bool {
+        settings.composingLLMEnabled && settings.composingConfig.isConfigured
+    }
+
+    /// Refines transcription text using LLM (short sentence mode).
+    func refine(text: String, examples: [CorrectionEntry], dictionarySnippet: String = "") async throws -> String {
+        let config = settings.shortSentenceConfig
+        guard isShortSentenceEnabled else { return text }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return text }
 
-        let systemPrompt = buildSystemPrompt(examples: examples)
+        let systemPrompt = buildSystemPrompt(examples: examples, dictionarySnippet: dictionarySnippet)
         let messages: [[String: String]] = [
             ["role": "system", "content": systemPrompt],
             ["role": "user", "content": text],
         ]
 
         var body: [String: Any] = [
-            "model": settings.llmModel,
+            "model": config.model,
             "messages": messages,
             "temperature": 0.3,
         ]
-        if !settings.reasoningEffort.isEmpty {
-            body["reasoning_effort"] = settings.reasoningEffort
+        if !config.reasoningEffort.isEmpty {
+            body["reasoning_effort"] = config.reasoningEffort
         }
 
-        let content = try await sendRequest(body: body, timeout: 15)
+        let content = try await sendRequest(body: body, config: config, timeout: 15)
 
         let refined = content.trimmingCharacters(in: .whitespacesAndNewlines)
         // Safety: reject outputs that are too long (likely hallucination)
@@ -44,10 +49,9 @@ final class LLMService {
 
     /// Refines long-text composing mode output.
     func refineComposing(text: String) async throws -> String {
-        guard isEnabled else { return text }
+        let config = settings.composingConfig
+        guard isComposingEnabled else { return text }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return text }
-
-        let model = settings.composingModel.isEmpty ? settings.llmModel : settings.composingModel
 
         let messages: [[String: String]] = [
             ["role": "system", "content": Constants.llmComposingPrompt],
@@ -55,26 +59,26 @@ final class LLMService {
         ]
 
         var body: [String: Any] = [
-            "model": model,
+            "model": config.model,
             "messages": messages,
             "temperature": 0.3,
         ]
-        if !settings.composingReasoningEffort.isEmpty {
-            body["reasoning_effort"] = settings.composingReasoningEffort
+        if !config.reasoningEffort.isEmpty {
+            body["reasoning_effort"] = config.reasoningEffort
         }
 
-        return try await sendRequest(body: body, timeout: 30)
+        return try await sendRequest(body: body, config: config, timeout: 30)
     }
 
     /// Tests API connectivity with a simple request.
-    func testConnection() async throws -> Bool {
+    func testConnection(config: LLMConfig) async throws -> Bool {
         let body: [String: Any] = [
-            "model": settings.llmModel,
+            "model": config.model,
             "messages": [["role": "user", "content": "Hello"]],
         ]
 
         do {
-            _ = try await sendRequest(body: body, timeout: 15)
+            _ = try await sendRequest(body: body, config: config, timeout: 15)
             return true
         } catch {
             return false
@@ -84,8 +88,8 @@ final class LLMService {
     // MARK: - Network
 
     /// Sends a request to the OpenAI-compatible API. Retries once on 503.
-    private func sendRequest(body: [String: Any], timeout: TimeInterval, retryCount: Int = 1) async throws -> String {
-        let baseURL = settings.llmBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    private func sendRequest(body: [String: Any], config: LLMConfig, timeout: TimeInterval, retryCount: Int = 1) async throws -> String {
+        let baseURL = config.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: "\(baseURL)/chat/completions") else {
             throw LLMError.invalidURL
         }
@@ -93,7 +97,7 @@ final class LLMService {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(settings.llmAPIKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         request.timeoutInterval = timeout
 
@@ -106,7 +110,7 @@ final class LLMService {
         // Retry on 503 (server overloaded)
         if httpResponse.statusCode == 503 && retryCount > 0 {
             try await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
-            return try await sendRequest(body: body, timeout: timeout, retryCount: retryCount - 1)
+            return try await sendRequest(body: body, config: config, timeout: timeout, retryCount: retryCount - 1)
         }
 
         guard httpResponse.statusCode == 200 else {
@@ -130,8 +134,12 @@ final class LLMService {
 
     // MARK: - System Prompt Builder
 
-    private func buildSystemPrompt(examples: [CorrectionEntry]) -> String {
+    private func buildSystemPrompt(examples: [CorrectionEntry], dictionarySnippet: String = "") -> String {
         var prompt = Constants.llmSystemPrompt
+
+        if !dictionarySnippet.isEmpty {
+            prompt += dictionarySnippet
+        }
 
         if !examples.isEmpty {
             prompt += "\n\nHere are examples of past corrections to guide your refinement:\n"

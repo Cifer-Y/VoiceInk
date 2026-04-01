@@ -20,6 +20,10 @@ enum Constants {
         appSupportDirectory.appendingPathComponent("corrections.json")
     }
 
+    static var userDictionaryFilePath: URL {
+        appSupportDirectory.appendingPathComponent("user_dictionary.json")
+    }
+
     static let maxCorrectionEntries = 200
 
     static let supportedLocales: [(id: String, name: String)] = [

@@ -1,98 +1,102 @@
 import SwiftUI
 import AppKit
 
-/// Settings window for configuring Speech Engine (Whisper) and LLM Refinement.
-struct SettingsView: View {
-    @State var baseURL: String
-    @State var apiKey: String
-    @State var model: String
-    @State var composingModel: String
-    @State var reasoningEffort: String
-    @State var composingReasoningEffort: String
-    @State var useWhisper: Bool
-    @State var whisperModel: String
-    @State private var testResult: TestResult?
-    @State private var isTesting = false
+// MARK: - Reusable Mode Section
+
+/// A settings section for one mode (short sentence or long text).
+/// Owns its own transient state (downloading, testing) while parent owns setting values.
+struct ModeSettingsSection: View {
+    @Binding var useWhisper: Bool
+    @Binding var whisperModel: String
+    @Binding var llmEnabled: Bool
+    @Binding var baseURL: String
+    @Binding var apiKey: String
+    @Binding var model: String
+    @Binding var reasoningEffort: String
+    @Binding var isModelDownloaded: Bool
+
+    let whisperService: WhisperService
+    let llmService: LLMService
+
     @State private var isDownloading = false
     @State private var downloadProgress: Double = 0
-
-    let settings: AppSettings
-    let llmService: LLMService
-    let onSave: () -> Void
-    let onCancel: () -> Void
+    @State private var isTesting = false
+    @State private var testResult: TestResult?
 
     enum TestResult {
         case success
         case failure(String)
     }
 
-    init(settings: AppSettings, llmService: LLMService, onSave: @escaping () -> Void, onCancel: @escaping () -> Void) {
-        self.settings = settings
-        self.llmService = llmService
-        self.onSave = onSave
-        self.onCancel = onCancel
-        self._baseURL = State(initialValue: settings.llmBaseURL)
-        self._apiKey = State(initialValue: settings.llmAPIKey)
-        self._model = State(initialValue: settings.llmModel)
-        self._composingModel = State(initialValue: settings.composingModel)
-        self._reasoningEffort = State(initialValue: settings.reasoningEffort)
-        self._composingReasoningEffort = State(initialValue: settings.composingReasoningEffort)
-        self._useWhisper = State(initialValue: settings.useWhisper)
-        self._whisperModel = State(initialValue: settings.whisperModel)
-    }
-
-    private let whisperModels = ["tiny", "base", "small", "medium"]
-
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                // MARK: - Speech Engine
-                Text("Speech Engine")
-                    .font(.headline)
+        VStack(alignment: .leading, spacing: 12) {
+            // MARK: Speech Engine
+            Text("Speech Engine")
+                .font(.headline)
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Picker("Engine", selection: $useWhisper) {
-                        Text("Apple Speech").tag(false)
-                        Text("Whisper (local)").tag(true)
+            Picker("Engine", selection: $useWhisper) {
+                Text("Apple Speech").tag(false)
+                Text("Whisper (local)").tag(true)
+            }
+            .pickerStyle(.segmented)
+
+            if useWhisper {
+                HStack {
+                    Text("Model")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Picker("", selection: $whisperModel) {
+                        Text("Tiny (~75 MB)").tag("tiny")
+                        Text("Base (~142 MB)").tag("base")
+                        Text("Small (~466 MB)").tag("small")
+                        Text("Medium (~1.5 GB)").tag("medium")
+                        Text("Large v3 Turbo (~1.6 GB)").tag("large-v3-turbo")
+                        Text("Large v3 (~2.9 GB)").tag("large-v3")
                     }
-                    .pickerStyle(.segmented)
-
-                    if useWhisper {
-                        HStack {
-                            Text("Model")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                            Picker("", selection: $whisperModel) {
-                                ForEach(whisperModels, id: \.self) { size in
-                                    Text(size).tag(size)
-                                }
-                            }
-                            .frame(width: 120)
-
-                            Spacer()
-
-                            if WhisperService.isModelDownloaded(whisperModel) {
-                                Label("Ready", systemImage: "checkmark.circle.fill")
-                                    .foregroundStyle(.green)
-                                    .font(.caption)
-                            } else if isDownloading {
-                                ProgressView(value: downloadProgress)
-                                    .frame(width: 80)
-                            } else {
-                                Button("Download") {
-                                    downloadWhisperModel()
-                                }
-                            }
-                        }
+                    .frame(width: 230)
+                    .onChange(of: whisperModel) { _, newValue in
+                        isModelDownloaded = WhisperService.isModelDownloaded(newValue)
                     }
                 }
 
-                Divider()
+                HStack {
+                    if isModelDownloaded {
+                        Label("Ready", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                            .font(.caption)
+                        Spacer()
+                        Button(role: .destructive) {
+                            deleteWhisperModel()
+                        } label: {
+                            Label("Delete Model", systemImage: "trash")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.borderless)
+                    } else if isDownloading {
+                        ProgressView(value: downloadProgress)
+                            .frame(width: 120)
+                        Text("\(Int(downloadProgress * 100))%")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    } else {
+                        Button("Download") {
+                            downloadWhisperModel()
+                        }
+                        Spacer()
+                    }
+                }
+            }
 
-                // MARK: - LLM Refinement
-                Text("LLM Refinement")
-                    .font(.headline)
+            Divider()
 
+            // MARK: LLM Refinement
+            Text("LLM Refinement")
+                .font(.headline)
+
+            Toggle("Enable LLM", isOn: $llmEnabled)
+
+            if llmEnabled {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("API Base URL")
                         .font(.subheadline)
@@ -109,15 +113,21 @@ struct SettingsView: View {
                         .textFieldStyle(.roundedBorder)
                 }
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Model (short sentence)")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    HStack {
-                        TextField("gemini-2.5-flash", text: $model)
+                HStack {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Model")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        TextField("gpt-4o-mini", text: $model)
                             .textFieldStyle(.roundedBorder)
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Reasoning")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
                         Picker("", selection: $reasoningEffort) {
-                            Text("none").tag("")
+                            Text("auto").tag("")
+                            Text("none").tag("none")
                             Text("low").tag("low")
                             Text("medium").tag("medium")
                             Text("high").tag("high")
@@ -126,38 +136,6 @@ struct SettingsView: View {
                     }
                 }
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Model (long text) — optional, defaults to above")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    HStack {
-                        TextField("gemini-3-flash-preview", text: $composingModel)
-                            .textFieldStyle(.roundedBorder)
-                        Picker("", selection: $composingReasoningEffort) {
-                            Text("none").tag("")
-                            Text("low").tag("low")
-                            Text("medium").tag("medium")
-                            Text("high").tag("high")
-                        }
-                        .frame(width: 100)
-                    }
-                }
-
-                // Test result
-                if let result = testResult {
-                    switch result {
-                    case .success:
-                        Label("Connection successful!", systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                    case .failure(let message):
-                        Label(message, systemImage: "xmark.circle.fill")
-                            .foregroundStyle(.red)
-                    }
-                }
-
-                Divider()
-
-                // MARK: - Actions
                 HStack {
                     Button("Test LLM") {
                         testConnection()
@@ -169,68 +147,44 @@ struct SettingsView: View {
                             .controlSize(.small)
                     }
 
-                    Spacer()
-
-                    Button("Cancel") {
-                        onCancel()
+                    if let result = testResult {
+                        switch result {
+                        case .success:
+                            Label("OK", systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                                .font(.caption)
+                        case .failure(let message):
+                            Label(message, systemImage: "xmark.circle.fill")
+                                .foregroundStyle(.red)
+                                .font(.caption)
+                        }
                     }
-                    .keyboardShortcut(.cancelAction)
-
-                    Button("Save") {
-                        saveSettings()
-                    }
-                    .keyboardShortcut(.defaultAction)
                 }
             }
-            .padding(20)
-            .frame(width: 420)
         }
     }
 
+    // MARK: - Actions
+
     private func testConnection() {
-        let originalURL = settings.llmBaseURL
-        let originalKey = settings.llmAPIKey
-        let originalModel = settings.llmModel
-
-        settings.llmBaseURL = baseURL
-        settings.llmAPIKey = apiKey
-        settings.llmModel = model
-
+        let config = LLMConfig(baseURL: baseURL, apiKey: apiKey, model: model, reasoningEffort: reasoningEffort)
         isTesting = true
         testResult = nil
 
         Task {
             do {
-                let success = try await llmService.testConnection()
+                let success = try await llmService.testConnection(config: config)
                 await MainActor.run {
                     isTesting = false
                     testResult = success ? .success : .failure("Connection failed.")
-                    settings.llmBaseURL = originalURL
-                    settings.llmAPIKey = originalKey
-                    settings.llmModel = originalModel
                 }
             } catch {
                 await MainActor.run {
                     isTesting = false
                     testResult = .failure(error.localizedDescription)
-                    settings.llmBaseURL = originalURL
-                    settings.llmAPIKey = originalKey
-                    settings.llmModel = originalModel
                 }
             }
         }
-    }
-
-    private func saveSettings() {
-        settings.useWhisper = useWhisper
-        settings.whisperModel = whisperModel
-        settings.llmBaseURL = baseURL
-        settings.llmAPIKey = apiKey
-        settings.llmModel = model
-        settings.composingModel = composingModel
-        settings.reasoningEffort = reasoningEffort
-        settings.composingReasoningEffort = composingReasoningEffort
-        onSave()
     }
 
     private func downloadWhisperModel() {
@@ -247,6 +201,7 @@ struct SettingsView: View {
                     switch result {
                     case .success:
                         self.downloadProgress = 1.0
+                        self.isModelDownloaded = true
                     case .failure(let error):
                         print("[Settings] Model download failed: \(error)")
                     }
@@ -254,13 +209,158 @@ struct SettingsView: View {
             }
         )
     }
+
+    private func deleteWhisperModel() {
+        WhisperService.deleteModel(whisperModel)
+        whisperService.unloadModel()
+        isModelDownloaded = false
+    }
 }
 
-/// Helper to present the settings window as an NSPanel.
+// MARK: - Settings View
+
+struct SettingsView: View {
+    // Short sentence mode
+    @State var useWhisper: Bool
+    @State var whisperModel: String
+    @State var llmEnabled: Bool
+    @State var baseURL: String
+    @State var apiKey: String
+    @State var model: String
+    @State var reasoningEffort: String
+    @State var isShortModelDownloaded: Bool
+
+    // Composing mode
+    @State var composingUseWhisper: Bool
+    @State var composingWhisperModel: String
+    @State var composingLLMEnabled: Bool
+    @State var composingBaseURL: String
+    @State var composingAPIKey: String
+    @State var composingModel: String
+    @State var composingReasoningEffort: String
+    @State var isComposingModelDownloaded: Bool
+
+    let settings: AppSettings
+    let llmService: LLMService
+    let whisperService: WhisperService
+    let onSave: () -> Void
+    let onCancel: () -> Void
+
+    init(settings: AppSettings, llmService: LLMService, whisperService: WhisperService, onSave: @escaping () -> Void, onCancel: @escaping () -> Void) {
+        self.settings = settings
+        self.llmService = llmService
+        self.whisperService = whisperService
+        self.onSave = onSave
+        self.onCancel = onCancel
+
+        // Short sentence
+        self._useWhisper = State(initialValue: settings.useWhisper)
+        self._whisperModel = State(initialValue: settings.whisperModel)
+        self._llmEnabled = State(initialValue: settings.llmEnabled)
+        self._baseURL = State(initialValue: settings.llmBaseURL)
+        self._apiKey = State(initialValue: settings.llmAPIKey)
+        self._model = State(initialValue: settings.llmModel)
+        self._reasoningEffort = State(initialValue: settings.reasoningEffort)
+        self._isShortModelDownloaded = State(initialValue: WhisperService.isModelDownloaded(settings.whisperModel))
+
+        // Composing
+        self._composingUseWhisper = State(initialValue: settings.composingUseWhisper)
+        self._composingWhisperModel = State(initialValue: settings.composingWhisperModel)
+        self._composingLLMEnabled = State(initialValue: settings.composingLLMEnabled)
+        self._composingBaseURL = State(initialValue: settings.composingLLMBaseURL)
+        self._composingAPIKey = State(initialValue: settings.composingLLMAPIKey)
+        self._composingModel = State(initialValue: settings.composingModel)
+        self._composingReasoningEffort = State(initialValue: settings.composingReasoningEffort)
+        self._isComposingModelDownloaded = State(initialValue: WhisperService.isModelDownloaded(settings.composingWhisperModel))
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            TabView {
+                ScrollView {
+                    ModeSettingsSection(
+                        useWhisper: $useWhisper,
+                        whisperModel: $whisperModel,
+                        llmEnabled: $llmEnabled,
+                        baseURL: $baseURL,
+                        apiKey: $apiKey,
+                        model: $model,
+                        reasoningEffort: $reasoningEffort,
+                        isModelDownloaded: $isShortModelDownloaded,
+                        whisperService: whisperService,
+                        llmService: llmService
+                    )
+                    .padding(16)
+                    .frame(width: 440)
+                }
+                .tabItem { Label("Short Sentence", systemImage: "text.bubble") }
+
+                ScrollView {
+                    ModeSettingsSection(
+                        useWhisper: $composingUseWhisper,
+                        whisperModel: $composingWhisperModel,
+                        llmEnabled: $composingLLMEnabled,
+                        baseURL: $composingBaseURL,
+                        apiKey: $composingAPIKey,
+                        model: $composingModel,
+                        reasoningEffort: $composingReasoningEffort,
+                        isModelDownloaded: $isComposingModelDownloaded,
+                        whisperService: whisperService,
+                        llmService: llmService
+                    )
+                    .padding(16)
+                    .frame(width: 440)
+                }
+                .tabItem { Label("Long Text", systemImage: "doc.text") }
+            }
+
+            Divider()
+
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    onCancel()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Button("Save") {
+                    saveSettings()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(12)
+        }
+    }
+
+    private func saveSettings() {
+        // Short sentence
+        settings.useWhisper = useWhisper
+        settings.whisperModel = whisperModel
+        settings.llmEnabled = llmEnabled
+        settings.llmBaseURL = baseURL
+        settings.llmAPIKey = apiKey
+        settings.llmModel = model
+        settings.reasoningEffort = reasoningEffort
+
+        // Composing
+        settings.composingUseWhisper = composingUseWhisper
+        settings.composingWhisperModel = composingWhisperModel
+        settings.composingLLMEnabled = composingLLMEnabled
+        settings.composingLLMBaseURL = composingBaseURL
+        settings.composingLLMAPIKey = composingAPIKey
+        settings.composingModel = composingModel
+        settings.composingReasoningEffort = composingReasoningEffort
+
+        onSave()
+    }
+}
+
+// MARK: - Window Controller
+
 final class SettingsWindowController {
     private var window: NSWindow?
 
-    func show(settings: AppSettings, llmService: LLMService) {
+    func show(settings: AppSettings, llmService: LLMService, whisperService: WhisperService) {
         if let window, window.isVisible {
             window.makeKeyAndOrderFront(nil)
             return
@@ -269,6 +369,7 @@ final class SettingsWindowController {
         let view = SettingsView(
             settings: settings,
             llmService: llmService,
+            whisperService: whisperService,
             onSave: { [weak self] in
                 self?.window?.close()
             },
@@ -278,10 +379,10 @@ final class SettingsWindowController {
         )
 
         let hostingView = NSHostingView(rootView: view)
-        hostingView.frame = NSRect(x: 0, y: 0, width: 420, height: 520)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 460, height: 540)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 540),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
