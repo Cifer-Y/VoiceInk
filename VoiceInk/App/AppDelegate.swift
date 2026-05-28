@@ -1,5 +1,8 @@
 import AppKit
 import Observation
+import os
+
+private let logger = Logger(subsystem: "com.cifer.VoiceInk", category: "AppDelegate")
 
 /// Main orchestrator: wires KeyMonitor, AudioEngine, HUD, TextInjector, LLMService, and CorrectionManager.
 /// Implements the state machine: idle → recording → refining → injecting → correctionReady → idle.
@@ -10,13 +13,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var keyMonitor = KeyMonitor()
     private let audioEngine = AudioEngine()
     private lazy var llmService = LLMService(settings: settings)
-    private let whisperService = WhisperService()
+    private let transcriptionService = OpenAITranscriptionService()
     private let correctionManager = CorrectionManager()
     private let userDictionary = UserDictionaryManager()
 
     // UI
     private lazy var menuBarManager = MenuBarManager(settings: settings, correctionManager: correctionManager)
     private let hudPanel = HUDPanel()
+    private let speedToast = SpeedToast()
     private let composingPanel = ComposingPanel()
     private let settingsWindowController = SettingsWindowController()
     private let correctionWindowController = CorrectionWindowController()
@@ -28,13 +32,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var state: TranscriptionState = .idle {
         didSet {
             menuBarManager.updateIcon(for: state)
+            // ESC only intercepts when VoiceInk is actively recording or processing
+            keyMonitor.isActive = (state == .recording || state == .refining
+                || state == .composingRecording || state == .composingRefining)
         }
     }
+    private var requestId: UInt64 = 0  // Incremented on cancel to discard stale async results
     private var lastResult: TranscriptionResult?
     private var composingBuffer: String = ""
+    private var composingSegments: [AnnotatedTranscription] = []
+    private var recentOutputs: [String] = []
     private var recordingStartTime: Date?
+    private var processingStartTime: Date?  // Measures latency from recording stop to injection
     private var whisperRecordingURL: URL?
-    private var currentLoadedWhisperModel: String?
     private var rmsObservation: Any?
 
     // MARK: - Application Lifecycle
@@ -56,7 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menuBarManager.onLLMSettingsRequested = { [weak self] in
             guard let self else { return }
-            self.settingsWindowController.show(settings: self.settings, llmService: self.llmService, whisperService: self.whisperService)
+            self.settingsWindowController.show(settings: self.settings, llmService: self.llmService, transcriptionService: self.transcriptionService)
         }
 
         menuBarManager.onCorrectionHistoryRequested = { [weak self] in
@@ -82,11 +92,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Key Monitor
 
     private func setupKeyMonitor() {
-        keyMonitor.onRightControlDown = { [weak self] in
+        keyMonitor.onRightOptionDown = { [weak self] in
             self?.handleRecordingStart()
         }
 
-        keyMonitor.onRightControlUp = { [weak self] in
+        keyMonitor.onRightOptionUp = { [weak self] in
             self?.handleRecordingStop()
         }
 
@@ -98,7 +108,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.handleDoubleTap()
         }
 
+        keyMonitor.onEscape = { [weak self] in
+            self?.handleEscapeCancel()
+        }
+
         keyMonitor.start()
+    }
+
+    // MARK: - Cancel
+
+    private func handleEscapeCancel() {
+        switch state {
+        case .recording, .composingRecording:
+            logger.info("ESC: cancelling recording")
+            requestId &+= 1
+            audioEngine.stopRecording()
+            if let url = whisperRecordingURL {
+                try? FileManager.default.removeItem(at: url)
+                whisperRecordingURL = nil
+            }
+            hudPanel.dismiss()
+            state = (state == .composingRecording) ? .composing : .idle
+        case .refining, .composingRefining:
+            logger.info("ESC: cancelling refinement")
+            requestId &+= 1
+            hudPanel.dismiss()
+            state = (state == .composingRefining) ? .composing : .idle
+        default:
+            break  // ESC does nothing in other states — let it pass through
+        }
     }
 
     // MARK: - Recording Flow
@@ -108,13 +146,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if state == .composing {
             state = .composingRecording
             do {
-                if settings.composingUseWhisper {
+                if settings.composingEngine == .openai {
                     whisperRecordingURL = try audioEngine.startRecordingToFile()
                 } else {
                     try audioEngine.startRecording(locale: settings.locale)
                 }
             } catch {
-                print("[AppDelegate] Composing recording failed: \(error)")
+                logger.error("Composing recording failed: \(error)")
                 state = .composing
             }
             composingPanel.setRecording(true)
@@ -130,20 +168,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recordingStartTime = Date()
 
         do {
-            if settings.useWhisper {
-                // Whisper mode: record to WAV file, no real-time ASR
+            if settings.shortEngine == .openai {
+                // OpenAI mode: record to WAV file, no real-time ASR
                 whisperRecordingURL = try audioEngine.startRecordingToFile()
             } else {
                 try audioEngine.startRecording(locale: settings.locale)
             }
         } catch {
             state = .error(error.localizedDescription)
-            print("Failed to start recording: \(error)")
+            logger.error("Failed to start recording: \(error)")
             return
         }
 
         // Show HUD
-        hudPanel.setCompactMode(settings.useWhisper)
+        hudPanel.setCompactMode(settings.shortEngine == .openai)
         hudPanel.show()
         hudPanel.setStatus(.recording)
         hudPanel.updateText("")
@@ -155,15 +193,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state = .composingRefining
             composingPanel.setRecording(false)
 
-            if settings.composingUseWhisper {
+            if settings.composingEngine == .openai {
                 let fileURL = audioEngine.stopRecordingToFile()
+                let rid = requestId
                 Task {
-                    let text = await transcribeWithWhisper(fileURL: fileURL, modelSize: settings.composingWhisperModel)
+                    let transcription = await transcribeWithOpenAI(fileURL: fileURL, config: settings.composingTranscriptionConfig)
                     await MainActor.run {
-                        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard self.requestId == rid else { return }
+                        let trimmed = transcription.text.trimmingCharacters(in: .whitespacesAndNewlines)
                         if !trimmed.isEmpty {
                             if !self.composingBuffer.isEmpty { self.composingBuffer += "\n" }
                             self.composingBuffer += trimmed
+                            self.composingSegments.append(transcription)
                             self.composingPanel.updateText(self.composingBuffer)
                         }
                         self.state = .composing
@@ -188,56 +229,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Show processing state
         state = .refining
+        processingStartTime = Date()
         hudPanel.setCompactMode(false)
         hudPanel.setStatus(.refining)
 
-        if settings.useWhisper {
+        if settings.shortEngine == .openai {
             let fileURL = audioEngine.stopRecordingToFile()
             hudPanel.updateText("Transcribing...")
 
+            let rid = requestId
             Task {
-                let asrText = await transcribeWithWhisper(fileURL: fileURL, modelSize: settings.whisperModel)
+                let transcription = await transcribeWithOpenAI(fileURL: fileURL, config: settings.transcriptionConfig)
                 await MainActor.run {
-                    self.processASRResult(asrText)
+                    guard self.requestId == rid else { return }
+                    self.processASRResult(transcription.text, annotatedText: transcription.annotatedText())
                 }
             }
         } else {
+            let rid = requestId
             audioEngine.stopAndFinalize { [weak self] asrText in
-                guard let self else { return }
+                guard let self, self.requestId == rid else { return }
                 self.processASRResult(asrText)
             }
         }
     }
 
-    /// Runs Whisper transcription on a background thread.
-    private func transcribeWithWhisper(fileURL: URL?, modelSize: String) async -> String {
-        guard let fileURL else { return "" }
+    /// Runs OpenAI transcription on a background task.
+    private func transcribeWithOpenAI(fileURL: URL?, config: TranscriptionConfig) async -> AnnotatedTranscription {
+        guard let fileURL else { return .plain("") }
         defer { try? FileManager.default.removeItem(at: fileURL) }
 
         do {
-            if !whisperService.isModelLoaded || currentLoadedWhisperModel != modelSize {
-                whisperService.unloadModel()
-                print("[Whisper] Loading model: \(modelSize)")
-                try whisperService.loadModel(size: modelSize)
-                currentLoadedWhisperModel = modelSize
-            }
-            let start = Date()
-            let result = try whisperService.transcribe(
+            return try await transcriptionService.transcribe(
                 audioURL: fileURL,
                 language: settings.locale,
-                initialPrompt: userDictionary.whisperPrompt()
+                prompt: buildTranscriptionPrompt(),
+                config: config
             )
-            let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
-            print("[Whisper] Transcribed (\(elapsed)): \"\(result)\"")
-            return result
         } catch {
-            print("[Whisper] Transcription error: \(error)")
-            return ""
+            logger.error("Transcription error: \(error)")
+            return .plain("")
         }
     }
 
-    /// Common path for processing ASR text (from either Apple Speech or Whisper).
-    private func processASRResult(_ asrText: String) {
+    /// Common path for processing ASR text (from either Apple Speech or OpenAI).
+    /// `annotatedText` carries confidence annotations only when the source provides them
+    /// (currently neither Apple Speech nor the OpenAI API does).
+    private func processASRResult(_ asrText: String, annotatedText: String? = nil) {
         guard !asrText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             state = .idle
             hudPanel.dismiss()
@@ -248,10 +286,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             hudPanel.updateText(asrText)
             let examples = correctionManager.selectExamples(for: asrText)
             let dictSnippet = userDictionary.llmPromptSnippet()
+            let context = recentOutputs.joined(separator: "\n")
+            let activeApp = NSWorkspace.shared.frontmostApplication?.localizedName
 
             Task {
                 do {
-                    let refined = try await self.llmService.refine(text: asrText, examples: examples, dictionarySnippet: dictSnippet)
+                    let refined = try await self.llmService.refine(text: asrText, annotatedText: annotatedText, examples: examples, dictionarySnippet: dictSnippet, previousContext: context, activeApp: activeApp)
                     await MainActor.run {
                         self.finishWithText(asrText: asrText, llmText: refined, finalText: refined)
                     }
@@ -276,6 +316,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Track stats
         let duration = recordingStartTime.map { Date().timeIntervalSince($0) } ?? 0
         usageStats.recordSession(duration: duration)
+        usageStats.recordCharacters(finalText.count)
+        if llmText != nil { usageStats.recordLLMRefinement() }
+        if let start = processingStartTime {
+            usageStats.recordLatency(Date().timeIntervalSince(start) * 1000)
+            processingStartTime = nil
+        }
         recordingStartTime = nil
 
         // Store result for potential correction
@@ -287,11 +333,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             timestamp: Date()
         )
 
+        // Append to context buffer (may be replaced by manual correction later)
+        recentOutputs.append(finalText)
+        if recentOutputs.count > 5 {
+            recentOutputs.removeFirst()
+        }
+        logger.info("Context buffer [\(self.recentOutputs.count)]: \(self.recentOutputs.joined(separator: " | "), privacy: .public)")
+
         // Inject text
         TextInjector.inject(finalText)
 
         // Dismiss HUD
         hudPanel.dismiss()
+
+        // Show speed toast
+        if duration > 0 {
+            let cpm = Int(Double(finalText.count) / duration * 60)
+            speedToast.show(charCount: finalText.count, cpm: cpm)
+        }
 
         // Enter correction-ready state — stays until next recording starts
         state = .correctionReady
@@ -321,6 +380,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 language: result.language
             )
             self.correctionManager.add(entry: entry)
+
+            // Replace last context entry with the manual correction
+            if !self.recentOutputs.isEmpty {
+                self.recentOutputs[self.recentOutputs.count - 1] = correctedText
+                logger.info("Context corrected [\(self.recentOutputs.count)]: \(self.recentOutputs.joined(separator: " | "), privacy: .public)")
+            }
 
             // Copy corrected text to clipboard for user to paste manually
             NSPasteboard.general.clearContents()
@@ -352,6 +417,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Enter composing mode
             lastResult = nil
             composingBuffer = ""
+            composingSegments = []
             state = .composing
             composingPanel.updateText("")
             composingPanel.onConfirm = { [weak self] text in
@@ -369,6 +435,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func confirmComposing(text: String) {
         let rawText = text
+        let segments = composingSegments
+        composingSegments = []
         composingPanel.dismiss()
         usageStats.recordComposing()
 
@@ -376,6 +444,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state = .idle
             return
         }
+
+        // Build annotated text from accumulated Whisper segments
+        let annotated: String? = segments.isEmpty ? nil : segments.map { $0.annotatedText() }.joined(separator: "\n")
 
         // Send to LLM for long-text refinement
         if llmService.isComposingEnabled {
@@ -386,9 +457,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             Task {
                 do {
-                    let refined = try await llmService.refineComposing(text: rawText)
+                    let refined = try await llmService.refineComposing(text: rawText, annotatedText: annotated)
                     await MainActor.run {
                         self.hudPanel.dismiss()
+                        self.usageStats.recordCharacters(refined.count)
                         TextInjector.inject(refined)
                         self.state = .idle
                     }
@@ -413,7 +485,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func cancelComposing() {
         composingPanel.dismiss()
         composingBuffer = ""
+        composingSegments = []
         state = .idle
+    }
+
+    // MARK: - Transcription Prompt
+
+    /// Combines user dictionary terms and frequently corrected words into a single
+    /// transcription prompt (OpenAI `prompt` parameter), used to bias the decoder toward
+    /// specific vocabulary. User dictionary terms take priority; correction-derived terms
+    /// fill the remaining budget.
+    private static let transcriptionPromptMaxChars = 400  // ~200 tokens for CJK
+
+    private func buildTranscriptionPrompt() -> String {
+        let dictPrompt = userDictionary.whisperPrompt()
+        let remaining = Self.transcriptionPromptMaxChars - dictPrompt.count
+        guard remaining > 10 else { return dictPrompt }
+
+        let correctionTerms = correctionManager.whisperPromptTerms()
+        var correctionPart = ""
+        for term in correctionTerms {
+            let addition = correctionPart.isEmpty ? term : ", \(term)"
+            if correctionPart.count + addition.count > remaining { break }
+            correctionPart += addition
+        }
+
+        let parts = [dictPrompt, correctionPart].filter { !$0.isEmpty }
+        let result = parts.joined(separator: ", ")
+        logger.debug("Whisper prompt (\(result.count) chars): \(result, privacy: .public)")
+        return result
     }
 
     // MARK: - Quota Warning
@@ -434,8 +534,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             if self.state == .recording {
                 self.hudPanel.updateRMS(self.audioEngine.rmsLevel)
-                if self.settings.useWhisper {
-                    // Whisper mode: show recording duration
+                if self.settings.shortEngine == .openai {
+                    // OpenAI mode: no real-time text, show recording duration
                     if let start = self.recordingStartTime {
                         let elapsed = Int(Date().timeIntervalSince(start))
                         let m = elapsed / 60

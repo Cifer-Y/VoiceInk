@@ -53,7 +53,7 @@ final class MenuBarManager {
         let menu = NSMenu()
 
         // Status
-        let statusItem = NSMenuItem(title: "VoiceInk — Hold Right Control to record", action: nil, keyEquivalent: "")
+        let statusItem = NSMenuItem(title: "VoiceInk — Hold Right Option to record", action: nil, keyEquivalent: "")
         statusItem.isEnabled = false
         menu.addItem(statusItem)
 

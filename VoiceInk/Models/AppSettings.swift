@@ -1,6 +1,12 @@
 import Foundation
 import Observation
 
+/// Speech-to-text engine. Apple Speech is local/real-time/free; OpenAI is remote/more accurate/paid.
+enum TranscriptionEngine: String {
+    case apple
+    case openai
+}
+
 struct LLMConfig {
     let baseURL: String
     let apiKey: String
@@ -12,23 +18,45 @@ struct LLMConfig {
     }
 }
 
+struct TranscriptionConfig {
+    let baseURL: String
+    let apiKey: String
+    let model: String
+
+    var isConfigured: Bool {
+        !baseURL.isEmpty && !apiKey.isEmpty && !model.isEmpty
+    }
+}
+
 @Observable
 final class AppSettings {
     private let defaults = UserDefaults.standard
+
+    static let defaultTranscriptionModel = "gpt-4o-mini-transcribe"
 
     var locale: String {
         didSet { defaults.set(locale, forKey: "locale") }
     }
 
-    // MARK: - Short Sentence Mode
+    // MARK: - Short Sentence Mode — Transcription
 
-    var useWhisper: Bool {
-        didSet { defaults.set(useWhisper, forKey: "useWhisper") }
+    var transcriptionEngine: String {
+        didSet { defaults.set(transcriptionEngine, forKey: "transcriptionEngine") }
     }
 
-    var whisperModel: String {
-        didSet { defaults.set(whisperModel, forKey: "whisperModel") }
+    var transcriptionModel: String {
+        didSet { defaults.set(transcriptionModel, forKey: "transcriptionModel") }
     }
+
+    var transcriptionBaseURL: String {
+        didSet { defaults.set(transcriptionBaseURL, forKey: "transcriptionBaseURL") }
+    }
+
+    var transcriptionAPIKey: String {
+        didSet { defaults.set(transcriptionAPIKey, forKey: "transcriptionAPIKey") }
+    }
+
+    // MARK: - Short Sentence Mode — LLM
 
     var llmEnabled: Bool {
         didSet { defaults.set(llmEnabled, forKey: "llmEnabled") }
@@ -50,15 +78,25 @@ final class AppSettings {
         didSet { defaults.set(reasoningEffort, forKey: "reasoningEffort") }
     }
 
-    // MARK: - Long Text (Composing) Mode
+    // MARK: - Long Text (Composing) Mode — Transcription
 
-    var composingUseWhisper: Bool {
-        didSet { defaults.set(composingUseWhisper, forKey: "composingUseWhisper") }
+    var composingTranscriptionEngine: String {
+        didSet { defaults.set(composingTranscriptionEngine, forKey: "composingTranscriptionEngine") }
     }
 
-    var composingWhisperModel: String {
-        didSet { defaults.set(composingWhisperModel, forKey: "composingWhisperModel") }
+    var composingTranscriptionModel: String {
+        didSet { defaults.set(composingTranscriptionModel, forKey: "composingTranscriptionModel") }
     }
+
+    var composingTranscriptionBaseURL: String {
+        didSet { defaults.set(composingTranscriptionBaseURL, forKey: "composingTranscriptionBaseURL") }
+    }
+
+    var composingTranscriptionAPIKey: String {
+        didSet { defaults.set(composingTranscriptionAPIKey, forKey: "composingTranscriptionAPIKey") }
+    }
+
+    // MARK: - Long Text (Composing) Mode — LLM
 
     var composingLLMEnabled: Bool {
         didSet { defaults.set(composingLLMEnabled, forKey: "composingLLMEnabled") }
@@ -82,6 +120,22 @@ final class AppSettings {
 
     // MARK: - Config Helpers
 
+    var shortEngine: TranscriptionEngine {
+        TranscriptionEngine(rawValue: transcriptionEngine) ?? .apple
+    }
+
+    var composingEngine: TranscriptionEngine {
+        TranscriptionEngine(rawValue: composingTranscriptionEngine) ?? .apple
+    }
+
+    var transcriptionConfig: TranscriptionConfig {
+        TranscriptionConfig(baseURL: transcriptionBaseURL, apiKey: transcriptionAPIKey, model: transcriptionModel)
+    }
+
+    var composingTranscriptionConfig: TranscriptionConfig {
+        TranscriptionConfig(baseURL: composingTranscriptionBaseURL, apiKey: composingTranscriptionAPIKey, model: composingTranscriptionModel)
+    }
+
     var shortSentenceConfig: LLMConfig {
         LLMConfig(baseURL: llmBaseURL, apiKey: llmAPIKey, model: llmModel, reasoningEffort: reasoningEffort)
     }
@@ -92,48 +146,58 @@ final class AppSettings {
 
     init() {
         let d = defaults
+        let defaultBaseURL = "https://api.openai.com/v1"
 
         self.locale = d.string(forKey: "locale") ?? "zh-CN"
 
-        // Short sentence mode — read into locals first
-        let sUseWhisper = d.object(forKey: "useWhisper") as? Bool ?? false
-        let sWhisperModel = d.string(forKey: "whisperModel") ?? "base"
+        // Short sentence LLM — read into locals first (reused as transcription defaults)
         let sLLMEnabled = d.object(forKey: "llmEnabled") as? Bool ?? false
-        let sBaseURL = d.string(forKey: "llmBaseURL") ?? "https://api.openai.com/v1"
+        let sBaseURL = d.string(forKey: "llmBaseURL") ?? defaultBaseURL
         let sAPIKey = d.string(forKey: "llmAPIKey") ?? ""
         let sModel = d.string(forKey: "llmModel") ?? "gpt-4o-mini"
         let sReasoning = d.string(forKey: "reasoningEffort") ?? "low"
 
-        self.useWhisper = sUseWhisper
-        self.whisperModel = sWhisperModel
         self.llmEnabled = sLLMEnabled
         self.llmBaseURL = sBaseURL
         self.llmAPIKey = sAPIKey
         self.llmModel = sModel
         self.reasoningEffort = sReasoning
 
-        // Composing mode — migrate from shared settings on first launch
+        // Short sentence transcription — migrate engine from legacy `useWhisper`,
+        // reuse LLM credentials as defaults (same OpenAI account in practice).
+        let legacyUseWhisper = d.object(forKey: "useWhisper") as? Bool ?? false
+        self.transcriptionEngine = d.string(forKey: "transcriptionEngine")
+            ?? (legacyUseWhisper ? TranscriptionEngine.openai.rawValue : TranscriptionEngine.apple.rawValue)
+        self.transcriptionModel = d.string(forKey: "transcriptionModel") ?? Self.defaultTranscriptionModel
+        self.transcriptionBaseURL = d.string(forKey: "transcriptionBaseURL") ?? sBaseURL
+        self.transcriptionAPIKey = d.string(forKey: "transcriptionAPIKey") ?? sAPIKey
+
+        // Composing LLM — migrate from shared short-sentence settings on first launch
         let needsMigration = d.object(forKey: "composingLLMBaseURL") == nil
 
-        self.composingUseWhisper = d.object(forKey: "composingUseWhisper") as? Bool
-            ?? (needsMigration ? sUseWhisper : false)
-        self.composingWhisperModel = d.string(forKey: "composingWhisperModel")
-            ?? (needsMigration ? sWhisperModel : "base")
         self.composingLLMEnabled = d.object(forKey: "composingLLMEnabled") as? Bool
             ?? (needsMigration ? sLLMEnabled : false)
-        self.composingLLMBaseURL = d.string(forKey: "composingLLMBaseURL")
-            ?? (needsMigration ? sBaseURL : "https://api.openai.com/v1")
-        self.composingLLMAPIKey = d.string(forKey: "composingLLMAPIKey")
+        let cBaseURL = d.string(forKey: "composingLLMBaseURL")
+            ?? (needsMigration ? sBaseURL : defaultBaseURL)
+        self.composingLLMBaseURL = cBaseURL
+        let cAPIKey = d.string(forKey: "composingLLMAPIKey")
             ?? (needsMigration ? sAPIKey : "")
+        self.composingLLMAPIKey = cAPIKey
         self.composingReasoningEffort = d.string(forKey: "composingReasoningEffort") ?? "medium"
 
         let rawComposingModel = d.string(forKey: "composingModel") ?? ""
         self.composingModel = rawComposingModel.isEmpty ? sModel : rawComposingModel
 
+        // Composing transcription — migrate engine from legacy `composingUseWhisper`
+        let legacyComposingUseWhisper = d.object(forKey: "composingUseWhisper") as? Bool ?? false
+        self.composingTranscriptionEngine = d.string(forKey: "composingTranscriptionEngine")
+            ?? (legacyComposingUseWhisper ? TranscriptionEngine.openai.rawValue : TranscriptionEngine.apple.rawValue)
+        self.composingTranscriptionModel = d.string(forKey: "composingTranscriptionModel") ?? Self.defaultTranscriptionModel
+        self.composingTranscriptionBaseURL = d.string(forKey: "composingTranscriptionBaseURL") ?? cBaseURL
+        self.composingTranscriptionAPIKey = d.string(forKey: "composingTranscriptionAPIKey") ?? cAPIKey
+
         // Persist migration values
         if needsMigration {
-            d.set(composingUseWhisper, forKey: "composingUseWhisper")
-            d.set(composingWhisperModel, forKey: "composingWhisperModel")
             d.set(composingLLMEnabled, forKey: "composingLLMEnabled")
             d.set(composingLLMBaseURL, forKey: "composingLLMBaseURL")
             d.set(composingLLMAPIKey, forKey: "composingLLMAPIKey")

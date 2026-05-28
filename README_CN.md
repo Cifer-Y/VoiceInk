@@ -1,0 +1,104 @@
+# VoiceInk
+
+macOS 菜单栏语音输入法。基于 Whisper 本地运行——不依赖云端，不需要订阅，不污染剪贴板。
+
+[English](README.md)
+
+---
+
+## 功能特性
+
+### 双转写引擎
+
+- **Whisper**（基于 [whisper.cpp](https://github.com/ggerganov/whisper.cpp)）—— 高精度离线转写，支持多种模型大小（Tiny → Large v3）
+- **Apple Speech** —— 零配置即用，使用 macOS 内置语音识别
+- 短句模式和长文模式可独立选择引擎
+
+### 大模型纠错
+
+- 利用上下文修正同音字错误（配森→Python，模形→模型，因该→应该）
+- 自动去除语气词（嗯/啊/呃/那个）
+- 将中文音译自动转换为英文术语
+- 支持 OpenAI、Ollama 或任何 OpenAI 兼容 API
+
+### 上下文感知纠错
+
+- 自动维护最近输出的滚动缓冲区，作为下一次 LLM 调用的上下文
+- 手动纠正后，纠正结果会替换缓冲区中的原始内容
+- 越用越准——正向反馈循环
+
+### 长文模式
+
+- 双击进入长文模式，支持多段录音拼接
+- 确认前可预览和编辑
+- 独立的 LLM 配置，自动处理口误修正，整理成清晰段落
+- 动态浮动面板，实时波形可视化
+
+### 纠正历史与小样本学习
+
+- 转写后短按即可手动纠正错误
+- 纠正记录自动保存，作为 LLM 的 few-shot 示例
+- 基于 bigram 相似度智能匹配最相关的历史纠正
+- 最多保存 200 条纠正记录，完整记录 ASR → LLM → 纠正 的过程
+
+### 用户词典
+
+- 添加专业术语、产品名、专有名词
+- 词条同时作用于 Whisper 识别引导（initial prompt）
+- 词条注入 LLM 系统提示词，作为优先词汇
+
+### 零剪贴板污染
+
+- 通过模拟键盘输入（CGEvent）注入文字，不触碰剪贴板
+- 正常使用中永远不会覆盖你的剪贴板内容
+- 智能检测 CJK 输入法状态——注入前自动切换英文键盘，完成后恢复
+
+### 多语言支持
+
+简体中文 · English · 繁體中文 · 日本語 · 한국어
+
+### 其他
+
+- **菜单栏应用** —— 无 Dock 图标，占用极小
+- **实时波形** —— 录音时实时显示 RMS 波形
+- **使用统计** —— 追踪录音次数、时长、纠正次数、长文会话
+- **结构化日志** —— 使用 os.Logger 分类，配合 `log stream` 调试
+
+---
+
+## 系统要求
+
+- macOS 14.0+
+- 麦克风和辅助功能权限
+- Whisper 模型（在设置中下载）
+- （可选）OpenAI 兼容 API，用于大模型纠错
+
+---
+
+## 构建安装
+
+```bash
+git clone https://github.com/Cifer-Y/VoiceInk.git
+cd VoiceInk
+
+swift build -c release
+cp .build/arm64-apple-macosx/release/VoiceInk VoiceInk.app/Contents/MacOS/VoiceInk
+cp -R VoiceInk.app /Applications/
+```
+
+---
+
+## 使用方法
+
+1. 启动 VoiceInk —— 出现在菜单栏
+2. 根据提示授予麦克风和辅助功能权限
+3. 在设置中下载 Whisper 模型
+4. **按住右 Option** 录音，松开即转写
+5. 转写后 **短按** 可手动纠错
+6. **双击** 进入长文模式
+
+---
+
+## 许可证
+
+MIT

@@ -1,6 +1,9 @@
 import AVFoundation
 import Speech
 import Observation
+import os
+
+private let logger = Logger(subsystem: "com.cifer.VoiceInk", category: "AudioEngine")
 
 /// Manages AVAudioEngine for microphone input and SFSpeechRecognizer for streaming transcription.
 /// Publishes RMS levels for waveform visualization and partial transcription text.
@@ -289,7 +292,7 @@ final class AudioEngine {
                 if nsError.domain == "kAFAssistantErrorDomain" && nsError.code == 216 {
                     return
                 }
-                print("[AudioEngine] Recognition error: \(error.localizedDescription)")
+                logger.error("Recognition error: \(error.localizedDescription)")
             }
         }
     }

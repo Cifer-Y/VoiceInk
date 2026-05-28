@@ -33,7 +33,7 @@ struct ComposingContentView: View {
             ScrollView {
                 Group {
                     if text.isEmpty {
-                        Text("Hold Right Control to record. Release to add text.\nDouble-tap Right Control to confirm.")
+                        Text("Hold Right Option to record. Release to add text.\nDouble-tap Right Option to confirm.")
                             .foregroundStyle(.secondary)
                             .font(.system(size: 13))
                     } else {

@@ -12,15 +12,9 @@ let package = Package(
             targets: ["VoiceInk"]
         )
     ],
-    dependencies: [
-        .package(url: "https://github.com/ggerganov/whisper.spm.git", branch: "master"),
-    ],
     targets: [
         .executableTarget(
             name: "VoiceInk",
-            dependencies: [
-                .product(name: "whisper", package: "whisper.spm"),
-            ],
             path: "VoiceInk"
         )
     ]

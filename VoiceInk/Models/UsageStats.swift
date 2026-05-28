@@ -24,6 +24,30 @@ final class UsageStats {
     var composingCount: Int {
         didSet { defaults.set(composingCount, forKey: "stats.composingCount") }
     }
+    var llmRefinements: Int {
+        didSet { defaults.set(llmRefinements, forKey: "stats.llmRefinements") }
+    }
+    var hallucinationsCaught: Int {
+        didSet { defaults.set(hallucinationsCaught, forKey: "stats.hallucinationsCaught") }
+    }
+    var todayCharacters: Int {
+        didSet { defaults.set(todayCharacters, forKey: "stats.todayCharacters") }
+    }
+    var totalCharacters: Int {
+        didSet { defaults.set(totalCharacters, forKey: "stats.totalCharacters") }
+    }
+    var totalLatencyMs: Double {
+        didSet { defaults.set(totalLatencyMs, forKey: "stats.totalLatencyMs") }
+    }
+    var latencySamples: Int {
+        didSet { defaults.set(latencySamples, forKey: "stats.latencySamples") }
+    }
+    var totalConfidence: Double {
+        didSet { defaults.set(totalConfidence, forKey: "stats.totalConfidence") }
+    }
+    var confidenceSamples: Int {
+        didSet { defaults.set(confidenceSamples, forKey: "stats.confidenceSamples") }
+    }
     var lastRecordingDate: String {
         didSet { defaults.set(lastRecordingDate, forKey: "stats.lastRecordingDate") }
     }
@@ -35,6 +59,14 @@ final class UsageStats {
         self.todayRecordingSeconds = defaults.double(forKey: "stats.todayRecordingSeconds")
         self.manualCorrectionCount = defaults.integer(forKey: "stats.manualCorrectionCount")
         self.composingCount = defaults.integer(forKey: "stats.composingCount")
+        self.llmRefinements = defaults.integer(forKey: "stats.llmRefinements")
+        self.hallucinationsCaught = defaults.integer(forKey: "stats.hallucinationsCaught")
+        self.todayCharacters = defaults.integer(forKey: "stats.todayCharacters")
+        self.totalCharacters = defaults.integer(forKey: "stats.totalCharacters")
+        self.totalLatencyMs = defaults.double(forKey: "stats.totalLatencyMs")
+        self.latencySamples = defaults.integer(forKey: "stats.latencySamples")
+        self.totalConfidence = defaults.double(forKey: "stats.totalConfidence")
+        self.confidenceSamples = defaults.integer(forKey: "stats.confidenceSamples")
         self.lastRecordingDate = defaults.string(forKey: "stats.lastRecordingDate") ?? ""
         resetTodayIfNeeded()
     }
@@ -49,6 +81,7 @@ final class UsageStats {
         if lastRecordingDate != todayString {
             todayRecordings = 0
             todayRecordingSeconds = 0
+            todayCharacters = 0
             lastRecordingDate = todayString
         }
     }
@@ -67,6 +100,52 @@ final class UsageStats {
 
     func recordComposing() {
         composingCount += 1
+    }
+
+    func recordLLMRefinement() {
+        llmRefinements += 1
+    }
+
+    func recordHallucination() {
+        hallucinationsCaught += 1
+    }
+
+    func recordCharacters(_ count: Int) {
+        resetTodayIfNeeded()
+        todayCharacters += count
+        totalCharacters += count
+    }
+
+    func recordLatency(_ ms: Double) {
+        totalLatencyMs += ms
+        latencySamples += 1
+    }
+
+    func recordConfidence(_ avg: Float) {
+        totalConfidence += Double(avg)
+        confidenceSamples += 1
+    }
+
+    /// Average end-to-end latency (recording stop → text injected).
+    var avgLatency: String {
+        guard latencySamples > 0 else { return "—" }
+        let avg = totalLatencyMs / Double(latencySamples)
+        return avg < 1000 ? String(format: "%.0fms", avg) : String(format: "%.1fs", avg / 1000)
+    }
+
+    /// Average Whisper confidence score (0–100%).
+    var avgConfidence: String {
+        guard confidenceSamples > 0 else { return "—" }
+        let avg = totalConfidence / Double(confidenceSamples) * 100
+        return String(format: "%.0f%%", avg)
+    }
+
+    /// LLM acceptance rate: percentage of refinements accepted without manual correction.
+    var llmAcceptanceRate: String {
+        guard llmRefinements > 0 else { return "—" }
+        let accepted = llmRefinements - manualCorrectionCount
+        let rate = Double(max(accepted, 0)) / Double(llmRefinements) * 100
+        return String(format: "%.0f%%", rate)
     }
 
     var formattedTodayDuration: String {

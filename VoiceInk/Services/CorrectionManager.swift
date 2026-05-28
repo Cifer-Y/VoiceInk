@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let logger = Logger(subsystem: "com.cifer.VoiceInk", category: "Corrections")
 
 /// Manages user correction history for LLM few-shot learning.
 /// Stored as JSON at ~/Library/Application Support/VoiceInk/corrections.json.
@@ -63,6 +66,88 @@ final class CorrectionManager {
         return Array(selected)
     }
 
+    // MARK: - Whisper Prompt Terms
+
+    /// Extracts words that Whisper frequently gets wrong, returning the correct versions.
+    /// Diffs ASR vs corrected text character-by-character to find the specific changed words,
+    /// not entire sentences. These bias Whisper's decoder toward the right vocabulary.
+    func whisperPromptTerms(maxCount: Int = 30) -> [String] {
+        var freq: [String: Int] = [:]
+        for entry in entries {
+            let asrChars = Array(entry.asrText)
+            let corrChars = Array(entry.correctedText)
+            // Extract changed segments from the corrected text
+            for word in extractChangedWords(from: asrChars, to: corrChars) {
+                let trimmed = word.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+                guard trimmed.count >= 2, trimmed.count <= 20 else { continue }
+                freq[trimmed, default: 0] += 1
+            }
+        }
+        return freq.sorted { $0.value > $1.value }.prefix(maxCount).map(\.key)
+    }
+
+    /// Simple character-level diff: finds contiguous runs of characters in `to` that differ from `from`.
+    private func extractChangedWords(from src: [Character], to dst: [Character]) -> [String] {
+        // Build longest common subsequence table
+        let m = src.count, n = dst.count
+        guard m > 0 && n > 0 else { return [] }
+
+        // Space-optimized LCS: only need previous and current row
+        var prev = [Int](repeating: 0, count: n + 1)
+        var curr = [Int](repeating: 0, count: n + 1)
+        for i in 1...m {
+            for j in 1...n {
+                if src[i - 1] == dst[j - 1] {
+                    curr[j] = prev[j - 1] + 1
+                } else {
+                    curr[j] = max(prev[j], curr[j - 1])
+                }
+            }
+            prev = curr
+            curr = [Int](repeating: 0, count: n + 1)
+        }
+
+        // Backtrack to find which dst characters are NOT in LCS (i.e., changed/added)
+        var inLCS = [Bool](repeating: false, count: n)
+        var i = m, j = n
+        // Rebuild full table for backtracking (use prev rows array)
+        var table = [[Int]](repeating: [Int](repeating: 0, count: n + 1), count: m + 1)
+        for i in 1...m {
+            for j in 1...n {
+                if src[i - 1] == dst[j - 1] {
+                    table[i][j] = table[i - 1][j - 1] + 1
+                } else {
+                    table[i][j] = max(table[i - 1][j], table[i][j - 1])
+                }
+            }
+        }
+        i = m; j = n
+        while i > 0 && j > 0 {
+            if src[i - 1] == dst[j - 1] {
+                inLCS[j - 1] = true
+                i -= 1; j -= 1
+            } else if table[i - 1][j] > table[i][j - 1] {
+                i -= 1
+            } else {
+                j -= 1
+            }
+        }
+
+        // Collect contiguous runs of non-LCS characters as "changed words"
+        var results: [String] = []
+        var current = ""
+        for k in 0..<n {
+            if !inLCS[k] {
+                current.append(dst[k])
+            } else if !current.isEmpty {
+                results.append(current)
+                current = ""
+            }
+        }
+        if !current.isEmpty { results.append(current) }
+        return results
+    }
+
     // MARK: - Bigram Similarity
 
     private func bigrams(_ text: String) -> Set<String> {
@@ -92,7 +177,7 @@ final class CorrectionManager {
             decoder.dateDecodingStrategy = .iso8601
             entries = try decoder.decode([CorrectionEntry].self, from: data)
         } catch {
-            print("Failed to load corrections: \(error)")
+            logger.error("Failed to load: \(error)")
             entries = []
         }
     }
@@ -105,7 +190,7 @@ final class CorrectionManager {
             let data = try encoder.encode(entries)
             try data.write(to: filePath, options: .atomic)
         } catch {
-            print("Failed to save corrections: \(error)")
+            logger.error("Failed to save: \(error)")
         }
     }
 }

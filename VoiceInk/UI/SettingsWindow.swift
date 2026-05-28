@@ -1,25 +1,29 @@
 import SwiftUI
 import AppKit
+import os
+
+private let logger = Logger(subsystem: "com.cifer.VoiceInk", category: "Settings")
 
 // MARK: - Reusable Mode Section
 
 /// A settings section for one mode (short sentence or long text).
-/// Owns its own transient state (downloading, testing) while parent owns setting values.
+/// Owns its own transient state (testing) while parent owns setting values.
 struct ModeSettingsSection: View {
-    @Binding var useWhisper: Bool
-    @Binding var whisperModel: String
+    @Binding var engine: String
+    @Binding var transcriptionModel: String
+    @Binding var transcriptionBaseURL: String
+    @Binding var transcriptionAPIKey: String
     @Binding var llmEnabled: Bool
     @Binding var baseURL: String
     @Binding var apiKey: String
     @Binding var model: String
     @Binding var reasoningEffort: String
-    @Binding var isModelDownloaded: Bool
 
-    let whisperService: WhisperService
+    let transcriptionService: OpenAITranscriptionService
     let llmService: LLMService
 
-    @State private var isDownloading = false
-    @State private var downloadProgress: Double = 0
+    @State private var isTestingTranscription = false
+    @State private var transcriptionTestResult: TestResult?
     @State private var isTesting = false
     @State private var testResult: TestResult?
 
@@ -28,62 +32,64 @@ struct ModeSettingsSection: View {
         case failure(String)
     }
 
+    private var useOpenAITranscription: Bool {
+        engine == TranscriptionEngine.openai.rawValue
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             // MARK: Speech Engine
             Text("Speech Engine")
                 .font(.headline)
 
-            Picker("Engine", selection: $useWhisper) {
-                Text("Apple Speech").tag(false)
-                Text("Whisper (local)").tag(true)
+            Picker("Engine", selection: $engine) {
+                Text("Apple Speech").tag(TranscriptionEngine.apple.rawValue)
+                Text("OpenAI").tag(TranscriptionEngine.openai.rawValue)
             }
             .pickerStyle(.segmented)
 
-            if useWhisper {
+            if useOpenAITranscription {
                 HStack {
                     Text("Model")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                    Picker("", selection: $whisperModel) {
-                        Text("Tiny (~75 MB)").tag("tiny")
-                        Text("Base (~142 MB)").tag("base")
-                        Text("Small (~466 MB)").tag("small")
-                        Text("Medium (~1.5 GB)").tag("medium")
-                        Text("Large v3 Turbo (~1.6 GB)").tag("large-v3-turbo")
-                        Text("Large v3 (~2.9 GB)").tag("large-v3")
+                    Picker("", selection: $transcriptionModel) {
+                        Text("gpt-4o-mini-transcribe").tag("gpt-4o-mini-transcribe")
+                        Text("gpt-4o-transcribe").tag("gpt-4o-transcribe")
+                        Text("whisper-1").tag("whisper-1")
                     }
                     .frame(width: 230)
-                    .onChange(of: whisperModel) { _, newValue in
-                        isModelDownloaded = WhisperService.isModelDownloaded(newValue)
-                    }
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("API Base URL")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    TextField("https://api.openai.com/v1", text: $transcriptionBaseURL)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("API Key")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    SecureField("sk-...", text: $transcriptionAPIKey)
+                        .textFieldStyle(.roundedBorder)
                 }
 
                 HStack {
-                    if isModelDownloaded {
-                        Label("Ready", systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                            .font(.caption)
-                        Spacer()
-                        Button(role: .destructive) {
-                            deleteWhisperModel()
-                        } label: {
-                            Label("Delete Model", systemImage: "trash")
-                                .font(.caption)
-                        }
-                        .buttonStyle(.borderless)
-                    } else if isDownloading {
-                        ProgressView(value: downloadProgress)
-                            .frame(width: 120)
-                        Text("\(Int(downloadProgress * 100))%")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                    } else {
-                        Button("Download") {
-                            downloadWhisperModel()
-                        }
-                        Spacer()
+                    Button("Test Transcription") {
+                        testTranscription()
+                    }
+                    .disabled(isTestingTranscription || transcriptionBaseURL.isEmpty || transcriptionAPIKey.isEmpty)
+
+                    if isTestingTranscription {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+
+                    if let result = transcriptionTestResult {
+                        resultLabel(result)
                     }
                 }
             }
@@ -148,23 +154,49 @@ struct ModeSettingsSection: View {
                     }
 
                     if let result = testResult {
-                        switch result {
-                        case .success:
-                            Label("OK", systemImage: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
-                                .font(.caption)
-                        case .failure(let message):
-                            Label(message, systemImage: "xmark.circle.fill")
-                                .foregroundStyle(.red)
-                                .font(.caption)
-                        }
+                        resultLabel(result)
                     }
                 }
             }
         }
     }
 
+    @ViewBuilder
+    private func resultLabel(_ result: TestResult) -> some View {
+        switch result {
+        case .success:
+            Label("OK", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+                .font(.caption)
+        case .failure(let message):
+            Label(message, systemImage: "xmark.circle.fill")
+                .foregroundStyle(.red)
+                .font(.caption)
+        }
+    }
+
     // MARK: - Actions
+
+    private func testTranscription() {
+        let config = TranscriptionConfig(baseURL: transcriptionBaseURL, apiKey: transcriptionAPIKey, model: transcriptionModel)
+        isTestingTranscription = true
+        transcriptionTestResult = nil
+
+        Task {
+            do {
+                let success = try await transcriptionService.testConnection(config: config)
+                await MainActor.run {
+                    isTestingTranscription = false
+                    transcriptionTestResult = success ? .success : .failure("Connection failed.")
+                }
+            } catch {
+                await MainActor.run {
+                    isTestingTranscription = false
+                    transcriptionTestResult = .failure(error.localizedDescription)
+                }
+            }
+        }
+    }
 
     private func testConnection() {
         let config = LLMConfig(baseURL: baseURL, apiKey: apiKey, model: model, reasoningEffort: reasoningEffort)
@@ -186,92 +218,67 @@ struct ModeSettingsSection: View {
             }
         }
     }
-
-    private func downloadWhisperModel() {
-        isDownloading = true
-        downloadProgress = 0
-        WhisperService.downloadModel(
-            size: whisperModel,
-            onProgress: { progress in
-                self.downloadProgress = progress
-            },
-            onComplete: { result in
-                DispatchQueue.main.async {
-                    self.isDownloading = false
-                    switch result {
-                    case .success:
-                        self.downloadProgress = 1.0
-                        self.isModelDownloaded = true
-                    case .failure(let error):
-                        print("[Settings] Model download failed: \(error)")
-                    }
-                }
-            }
-        )
-    }
-
-    private func deleteWhisperModel() {
-        WhisperService.deleteModel(whisperModel)
-        whisperService.unloadModel()
-        isModelDownloaded = false
-    }
 }
 
 // MARK: - Settings View
 
 struct SettingsView: View {
     // Short sentence mode
-    @State var useWhisper: Bool
-    @State var whisperModel: String
+    @State var engine: String
+    @State var transcriptionModel: String
+    @State var transcriptionBaseURL: String
+    @State var transcriptionAPIKey: String
     @State var llmEnabled: Bool
     @State var baseURL: String
     @State var apiKey: String
     @State var model: String
     @State var reasoningEffort: String
-    @State var isShortModelDownloaded: Bool
 
     // Composing mode
-    @State var composingUseWhisper: Bool
-    @State var composingWhisperModel: String
+    @State var composingEngine: String
+    @State var composingTranscriptionModel: String
+    @State var composingTranscriptionBaseURL: String
+    @State var composingTranscriptionAPIKey: String
     @State var composingLLMEnabled: Bool
     @State var composingBaseURL: String
     @State var composingAPIKey: String
     @State var composingModel: String
     @State var composingReasoningEffort: String
-    @State var isComposingModelDownloaded: Bool
 
     let settings: AppSettings
     let llmService: LLMService
-    let whisperService: WhisperService
+    let transcriptionService: OpenAITranscriptionService
     let onSave: () -> Void
     let onCancel: () -> Void
 
-    init(settings: AppSettings, llmService: LLMService, whisperService: WhisperService, onSave: @escaping () -> Void, onCancel: @escaping () -> Void) {
+    init(settings: AppSettings, llmService: LLMService, transcriptionService: OpenAITranscriptionService, onSave: @escaping () -> Void, onCancel: @escaping () -> Void) {
         self.settings = settings
         self.llmService = llmService
-        self.whisperService = whisperService
+        self.transcriptionService = transcriptionService
         self.onSave = onSave
         self.onCancel = onCancel
 
         // Short sentence
-        self._useWhisper = State(initialValue: settings.useWhisper)
-        self._whisperModel = State(initialValue: settings.whisperModel)
+        self._engine = State(initialValue: settings.transcriptionEngine)
+        self._transcriptionModel = State(initialValue: settings.transcriptionModel)
+        self._transcriptionBaseURL = State(initialValue: settings.transcriptionBaseURL)
+        self._transcriptionAPIKey = State(initialValue: settings.transcriptionAPIKey)
         self._llmEnabled = State(initialValue: settings.llmEnabled)
         self._baseURL = State(initialValue: settings.llmBaseURL)
         self._apiKey = State(initialValue: settings.llmAPIKey)
         self._model = State(initialValue: settings.llmModel)
         self._reasoningEffort = State(initialValue: settings.reasoningEffort)
-        self._isShortModelDownloaded = State(initialValue: WhisperService.isModelDownloaded(settings.whisperModel))
 
         // Composing
-        self._composingUseWhisper = State(initialValue: settings.composingUseWhisper)
-        self._composingWhisperModel = State(initialValue: settings.composingWhisperModel)
+        self._composingEngine = State(initialValue: settings.composingTranscriptionEngine)
+        self._composingTranscriptionModel = State(initialValue: settings.composingTranscriptionModel)
+        self._composingTranscriptionBaseURL = State(initialValue: settings.composingTranscriptionBaseURL)
+        self._composingTranscriptionAPIKey = State(initialValue: settings.composingTranscriptionAPIKey)
         self._composingLLMEnabled = State(initialValue: settings.composingLLMEnabled)
         self._composingBaseURL = State(initialValue: settings.composingLLMBaseURL)
         self._composingAPIKey = State(initialValue: settings.composingLLMAPIKey)
         self._composingModel = State(initialValue: settings.composingModel)
         self._composingReasoningEffort = State(initialValue: settings.composingReasoningEffort)
-        self._isComposingModelDownloaded = State(initialValue: WhisperService.isModelDownloaded(settings.composingWhisperModel))
     }
 
     var body: some View {
@@ -279,15 +286,16 @@ struct SettingsView: View {
             TabView {
                 ScrollView {
                     ModeSettingsSection(
-                        useWhisper: $useWhisper,
-                        whisperModel: $whisperModel,
+                        engine: $engine,
+                        transcriptionModel: $transcriptionModel,
+                        transcriptionBaseURL: $transcriptionBaseURL,
+                        transcriptionAPIKey: $transcriptionAPIKey,
                         llmEnabled: $llmEnabled,
                         baseURL: $baseURL,
                         apiKey: $apiKey,
                         model: $model,
                         reasoningEffort: $reasoningEffort,
-                        isModelDownloaded: $isShortModelDownloaded,
-                        whisperService: whisperService,
+                        transcriptionService: transcriptionService,
                         llmService: llmService
                     )
                     .padding(16)
@@ -297,15 +305,16 @@ struct SettingsView: View {
 
                 ScrollView {
                     ModeSettingsSection(
-                        useWhisper: $composingUseWhisper,
-                        whisperModel: $composingWhisperModel,
+                        engine: $composingEngine,
+                        transcriptionModel: $composingTranscriptionModel,
+                        transcriptionBaseURL: $composingTranscriptionBaseURL,
+                        transcriptionAPIKey: $composingTranscriptionAPIKey,
                         llmEnabled: $composingLLMEnabled,
                         baseURL: $composingBaseURL,
                         apiKey: $composingAPIKey,
                         model: $composingModel,
                         reasoningEffort: $composingReasoningEffort,
-                        isModelDownloaded: $isComposingModelDownloaded,
-                        whisperService: whisperService,
+                        transcriptionService: transcriptionService,
                         llmService: llmService
                     )
                     .padding(16)
@@ -334,8 +343,10 @@ struct SettingsView: View {
 
     private func saveSettings() {
         // Short sentence
-        settings.useWhisper = useWhisper
-        settings.whisperModel = whisperModel
+        settings.transcriptionEngine = engine
+        settings.transcriptionModel = transcriptionModel
+        settings.transcriptionBaseURL = transcriptionBaseURL
+        settings.transcriptionAPIKey = transcriptionAPIKey
         settings.llmEnabled = llmEnabled
         settings.llmBaseURL = baseURL
         settings.llmAPIKey = apiKey
@@ -343,8 +354,10 @@ struct SettingsView: View {
         settings.reasoningEffort = reasoningEffort
 
         // Composing
-        settings.composingUseWhisper = composingUseWhisper
-        settings.composingWhisperModel = composingWhisperModel
+        settings.composingTranscriptionEngine = composingEngine
+        settings.composingTranscriptionModel = composingTranscriptionModel
+        settings.composingTranscriptionBaseURL = composingTranscriptionBaseURL
+        settings.composingTranscriptionAPIKey = composingTranscriptionAPIKey
         settings.composingLLMEnabled = composingLLMEnabled
         settings.composingLLMBaseURL = composingBaseURL
         settings.composingLLMAPIKey = composingAPIKey
@@ -360,16 +373,17 @@ struct SettingsView: View {
 final class SettingsWindowController {
     private var window: NSWindow?
 
-    func show(settings: AppSettings, llmService: LLMService, whisperService: WhisperService) {
+    func show(settings: AppSettings, llmService: LLMService, transcriptionService: OpenAITranscriptionService) {
         if let window, window.isVisible {
             window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
             return
         }
 
         let view = SettingsView(
             settings: settings,
             llmService: llmService,
-            whisperService: whisperService,
+            transcriptionService: transcriptionService,
             onSave: { [weak self] in
                 self?.window?.close()
             },

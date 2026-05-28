@@ -1,114 +1,112 @@
 import SwiftUI
 import AppKit
 
-struct StatCard: View {
-    let icon: String
+// MARK: - Stat Row (list-style: label left, value right)
+
+private struct StatRow: View {
     let title: String
     let value: String
-    let color: Color
+    let icon: String
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack {
             Image(systemName: icon)
-                .font(.system(size: 20))
-                .foregroundStyle(color)
-                .frame(width: 36, height: 36)
-                .background(color.opacity(0.15))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                Text(value)
-                    .font(.system(size: 18, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.primary)
-            }
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
+            Text(title)
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
             Spacer()
+            Text(value)
+                .font(.system(size: 13, weight: .medium, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(.primary)
         }
-        .padding(12)
-        .background(.ultraThinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .padding(.vertical, 3)
     }
 }
+
+// MARK: - Section Header
+
+private struct SectionHeader: View {
+    let title: String
+
+    var body: some View {
+        HStack {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .textCase(.uppercase)
+                .tracking(0.8)
+            Rectangle()
+                .fill(.quaternary)
+                .frame(height: 0.5)
+        }
+        .padding(.top, 6)
+    }
+}
+
+// MARK: - Stats View
 
 struct StatsView: View {
     let stats: UsageStats
 
-    private let accentOrange = Color(red: 0xF0 / 255.0, green: 0x9F / 255.0, blue: 0x47 / 255.0)
+    private let accent = Color(red: 0xF0 / 255.0, green: 0x9F / 255.0, blue: 0x47 / 255.0)
 
     var body: some View {
-        VStack(spacing: 16) {
-            // Header
-            HStack {
-                Image(systemName: "chart.bar.fill")
-                    .foregroundStyle(accentOrange)
-                Text("Usage Stats")
-                    .font(.system(size: 16, weight: .bold))
-                Spacer()
+        VStack(spacing: 14) {
+            // Hero: today vs all time
+            HStack(spacing: 0) {
+                heroNumber(value: "\(stats.todayRecordings)", label: "Today", highlight: true)
+                Divider().frame(height: 40).padding(.horizontal, 16)
+                heroNumber(value: "\(stats.totalRecordings)", label: "All Time", highlight: false)
             }
+            .padding(.vertical, 12)
 
-            // Today highlight
-            HStack(spacing: 12) {
-                VStack(spacing: 4) {
-                    Text("\(stats.todayRecordings)")
-                        .font(.system(size: 36, weight: .bold, design: .rounded))
-                        .foregroundStyle(accentOrange)
-                    Text("Today")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 16)
-                .background(accentOrange.opacity(0.1))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+            // Recording section
+            SectionHeader(title: "Recording")
+            StatRow(title: "Recording Time", value: stats.formattedTotalDuration, icon: "clock")
+            StatRow(title: "Today's Time", value: stats.formattedTodayDuration, icon: "sun.max")
+            StatRow(title: "Today's Chars", value: formatted(stats.todayCharacters), icon: "character.cursor.ibeam")
+            StatRow(title: "Total Chars", value: formatted(stats.totalCharacters), icon: "text.justify.left")
 
-                VStack(spacing: 4) {
-                    Text("\(stats.totalRecordings)")
-                        .font(.system(size: 36, weight: .bold, design: .rounded))
-                        .foregroundStyle(.blue)
-                    Text("All Time")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 16)
-                .background(Color.blue.opacity(0.1))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-            }
+            // Performance section
+            SectionHeader(title: "Performance")
+            StatRow(title: "Avg Response Time", value: stats.avgLatency, icon: "bolt")
 
-            // Detail cards
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                StatCard(
-                    icon: "clock.fill",
-                    title: "Recording Time",
-                    value: stats.formattedTotalDuration,
-                    color: .green
-                )
-                StatCard(
-                    icon: "sun.max.fill",
-                    title: "Today's Time",
-                    value: stats.formattedTodayDuration,
-                    color: .purple
-                )
-                StatCard(
-                    icon: "pencil.circle.fill",
-                    title: "Corrections",
-                    value: "\(stats.manualCorrectionCount)",
-                    color: .pink
-                )
-                StatCard(
-                    icon: "text.bubble.fill",
-                    title: "Long Text",
-                    value: "\(stats.composingCount)",
-                    color: accentOrange
-                )
-            }
+            // AI Quality section
+            SectionHeader(title: "AI Quality")
+            StatRow(title: "LLM Accuracy", value: stats.llmAcceptanceRate, icon: "checkmark.seal")
+            StatRow(title: "Manual Corrections", value: "\(stats.manualCorrectionCount)", icon: "pencil")
+            StatRow(title: "Long Text Sessions", value: "\(stats.composingCount)", icon: "text.bubble")
         }
-        .padding(20)
-        .frame(width: 360)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 20)
+        .frame(width: 340)
+    }
+
+    private func heroNumber(value: String, label: String, highlight: Bool) -> some View {
+        VStack(spacing: 4) {
+            Text(value)
+                .font(.system(size: 36, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(highlight ? accent : .primary)
+            Text(label)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func formatted(_ n: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        return formatter.string(from: NSNumber(value: n)) ?? "\(n)"
     }
 }
+
+// MARK: - Window Controller
 
 final class StatsWindowController {
     private var window: NSWindow?
@@ -116,20 +114,21 @@ final class StatsWindowController {
     func show(stats: UsageStats) {
         if let window, window.isVisible {
             window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
             return
         }
 
         let view = StatsView(stats: stats)
         let hostingView = NSHostingView(rootView: view)
-        hostingView.frame = NSRect(x: 0, y: 0, width: 360, height: 340)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 340, height: 490)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 360, height: 340),
+            contentRect: NSRect(x: 0, y: 0, width: 340, height: 490),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
-        window.title = "VoiceInk — Usage Stats"
+        window.title = "Usage Stats"
         window.contentView = hostingView
         window.center()
         window.isReleasedWhenClosed = false

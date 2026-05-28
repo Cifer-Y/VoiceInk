@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let logger = Logger(subsystem: "com.cifer.VoiceInk", category: "UserDictionary")
 
 /// Manages user-defined vocabulary for improving transcription accuracy.
 /// Two integration points: Whisper initial_prompt and LLM prompt injection.
@@ -60,7 +63,7 @@ final class UserDictionaryManager {
             let data = try Data(contentsOf: filePath)
             entries = try JSONDecoder().decode([UserDictionaryEntry].self, from: data)
         } catch {
-            print("Failed to load user dictionary: \(error)")
+            logger.error("Failed to load: \(error)")
             entries = []
         }
     }
@@ -72,7 +75,7 @@ final class UserDictionaryManager {
             let data = try encoder.encode(entries)
             try data.write(to: filePath, options: .atomic)
         } catch {
-            print("Failed to save user dictionary: \(error)")
+            logger.error("Failed to save: \(error)")
         }
     }
 }

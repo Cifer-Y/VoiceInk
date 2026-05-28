@@ -46,17 +46,19 @@ struct HUDContentView: View {
     let text: String
     let status: HUDStatus
     let compactMode: Bool
+    let speedLabel: String
 
     enum HUDStatus {
         case recording
         case refining
     }
 
-    init(rmsLevel: Float, text: String, status: HUDStatus, compactMode: Bool = false) {
+    init(rmsLevel: Float, text: String, status: HUDStatus, compactMode: Bool = false, speedLabel: String = "") {
         self.rmsLevel = rmsLevel
         self.text = text
         self.status = status
         self.compactMode = compactMode
+        self.speedLabel = speedLabel
     }
 
     private let accent = Color(red: 0xF0 / 255.0, green: 0x9F / 255.0, blue: 0x47 / 255.0)
@@ -145,8 +147,8 @@ struct HUDContentView: View {
                 }
             }
 
-            // Right: text
-            Group {
+            // Right: text + optional speed label
+            VStack(alignment: .leading, spacing: 4) {
                 if status == .refining && text.isEmpty {
                     Text("Refining...")
                         .foregroundStyle(textColorLight)
@@ -161,6 +163,12 @@ struct HUDContentView: View {
                         .foregroundStyle(textColor)
                         .lineLimit(6)
                         .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if !speedLabel.isEmpty {
+                    Text(speedLabel)
+                        .font(.custom("Avenir Next", size: 11).weight(.medium))
+                        .foregroundStyle(textColorLight.opacity(0.7))
                 }
             }
             .frame(minWidth: 120, maxWidth: 260, alignment: .leading)

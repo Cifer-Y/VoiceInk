@@ -7,6 +7,7 @@ final class HUDState: ObservableObject {
     @Published var text: String = ""
     @Published var status: HUDContentView.HUDStatus = .recording
     @Published var compactMode: Bool = false
+    @Published var speedLabel: String = ""  // e.g. "128 chars/min"
 }
 
 /// Wrapper view that observes HUDState and animates transitions.
@@ -18,7 +19,8 @@ struct HUDRootView: View {
             rmsLevel: state.rmsLevel,
             text: state.text,
             status: state.status,
-            compactMode: state.compactMode
+            compactMode: state.compactMode,
+            speedLabel: state.speedLabel
         )
     }
 }
@@ -107,6 +109,10 @@ final class HUDPanel {
 
     func setCompactMode(_ compact: Bool) {
         hudState.compactMode = compact
+    }
+
+    func setSpeedLabel(_ label: String) {
+        hudState.speedLabel = label
     }
 
     // MARK: - Private

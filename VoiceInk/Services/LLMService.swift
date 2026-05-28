@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let logger = Logger(subsystem: "com.cifer.VoiceInk", category: "LLM")
 
 /// OpenAI-compatible API client for speech recognition error correction.
 final class LLMService {
@@ -17,57 +20,74 @@ final class LLMService {
     }
 
     /// Refines transcription text using LLM (short sentence mode).
-    func refine(text: String, examples: [CorrectionEntry], dictionarySnippet: String = "") async throws -> String {
+    /// When `annotatedText` is provided (from Whisper confidence data), it is sent to the LLM
+    /// so low-confidence words are highlighted for targeted correction.
+    func refine(text: String, annotatedText: String? = nil, examples: [CorrectionEntry], dictionarySnippet: String = "", previousContext: String = "", activeApp: String? = nil) async throws -> String {
         let config = settings.shortSentenceConfig
         guard isShortSentenceEnabled else { return text }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return text }
 
-        let systemPrompt = buildSystemPrompt(examples: examples, dictionarySnippet: dictionarySnippet)
+        let systemPrompt = buildSystemPrompt(examples: examples, dictionarySnippet: dictionarySnippet, previousContext: previousContext, activeApp: activeApp)
+        let userContent = annotatedText ?? text
         let messages: [[String: String]] = [
             ["role": "system", "content": systemPrompt],
-            ["role": "user", "content": text],
+            ["role": "user", "content": userContent],
         ]
 
+        // Reasoning models (o-series / GPT-5) reject custom temperature; non-reasoning
+        // models (e.g. gpt-4o) reject reasoning_effort. Send exactly one.
         var body: [String: Any] = [
             "model": config.model,
             "messages": messages,
-            "temperature": 0.3,
         ]
-        if !config.reasoningEffort.isEmpty {
+        if config.reasoningEffort.isEmpty {
+            body["temperature"] = 0.3
+        } else {
             body["reasoning_effort"] = config.reasoningEffort
         }
 
+        logger.info("[short] ASR input: \(text, privacy: .public)")
         let content = try await sendRequest(body: body, config: config, timeout: 15)
 
         let refined = content.trimmingCharacters(in: .whitespacesAndNewlines)
         // Safety: reject outputs that are too long (likely hallucination)
         if refined.count > text.count * 3 {
+            logger.warning("[short] LLM output rejected (too long): \(refined, privacy: .public)")
             return text
         }
+        logger.info("[short] LLM output: \(refined, privacy: .public)")
         return refined
     }
 
     /// Refines long-text composing mode output.
-    func refineComposing(text: String) async throws -> String {
+    /// When `annotatedText` is provided, low-confidence words are highlighted for the LLM.
+    func refineComposing(text: String, annotatedText: String? = nil) async throws -> String {
         let config = settings.composingConfig
         guard isComposingEnabled else { return text }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return text }
 
+        let userContent = annotatedText ?? text
         let messages: [[String: String]] = [
             ["role": "system", "content": Constants.llmComposingPrompt],
-            ["role": "user", "content": text],
+            ["role": "user", "content": userContent],
         ]
 
+        // Reasoning models (o-series / GPT-5) reject custom temperature; non-reasoning
+        // models (e.g. gpt-4o) reject reasoning_effort. Send exactly one.
         var body: [String: Any] = [
             "model": config.model,
             "messages": messages,
-            "temperature": 0.3,
         ]
-        if !config.reasoningEffort.isEmpty {
+        if config.reasoningEffort.isEmpty {
+            body["temperature"] = 0.3
+        } else {
             body["reasoning_effort"] = config.reasoningEffort
         }
 
-        return try await sendRequest(body: body, config: config, timeout: 30)
+        logger.info("[composing] ASR input: \(text, privacy: .public)")
+        let result = try await sendRequest(body: body, config: config, timeout: 30)
+        logger.info("[composing] LLM output: \(result, privacy: .public)")
+        return result
     }
 
     /// Tests API connectivity with a simple request.
@@ -94,6 +114,12 @@ final class LLMService {
             throw LLMError.invalidURL
         }
 
+        // Disable thinking for local Ollama models (e.g. Gemma 4)
+        var body = body
+        if config.baseURL.contains("localhost") || config.baseURL.contains("127.0.0.1") {
+            body["think"] = false
+        }
+
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -101,7 +127,9 @@ final class LLMService {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         request.timeoutInterval = timeout
 
+        let start = CFAbsoluteTimeGetCurrent()
         let (data, response) = try await URLSession.shared.data(for: request)
+        let elapsed = CFAbsoluteTimeGetCurrent() - start
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw LLMError.invalidResponse
@@ -109,12 +137,14 @@ final class LLMService {
 
         // Retry on 503 (server overloaded)
         if httpResponse.statusCode == 503 && retryCount > 0 {
+            logger.warning("503 from LLM, retrying in 1s")
             try await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
             return try await sendRequest(body: body, config: config, timeout: timeout, retryCount: retryCount - 1)
         }
 
         guard httpResponse.statusCode == 200 else {
             let statusCode = httpResponse.statusCode
+            logger.error("LLM request failed: HTTP \(statusCode)")
             if statusCode == 429 || statusCode == 403 {
                 throw LLMError.rateLimited
             }
@@ -129,16 +159,26 @@ final class LLMService {
             throw LLMError.invalidResponse
         }
 
-        return content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let result = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        logger.info("LLM \(config.model, privacy: .public) done in \(String(format: "%.1f", elapsed * 1000), privacy: .public)ms — \(result, privacy: .public)")
+        return result
     }
 
     // MARK: - System Prompt Builder
 
-    private func buildSystemPrompt(examples: [CorrectionEntry], dictionarySnippet: String = "") -> String {
+    private func buildSystemPrompt(examples: [CorrectionEntry], dictionarySnippet: String = "", previousContext: String = "", activeApp: String? = nil) -> String {
         var prompt = Constants.llmSystemPrompt
+
+        if let app = activeApp, !app.isEmpty {
+            prompt += "\n\nUser is currently in: \(app). Use this to disambiguate domain-specific terms."
+        }
 
         if !dictionarySnippet.isEmpty {
             prompt += dictionarySnippet
+        }
+
+        if !previousContext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            prompt += "\n\nRecent context (previously dictated text, use for disambiguation):\n\(previousContext)"
         }
 
         if !examples.isEmpty {

@@ -107,7 +107,7 @@ struct CorrectionHistoryView: View {
             }
 
             if entries.isEmpty {
-                Text("No corrections yet. After voice input, tap Right Control briefly to correct.")
+                Text("No corrections yet. After voice input, tap Right Option briefly to correct.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, 20)
@@ -252,6 +252,7 @@ final class CorrectionHistoryWindowController {
     func show(correctionManager: CorrectionManager) {
         if let window, window.isVisible {
             window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
             return
         }
 
