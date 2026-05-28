@@ -1,6 +1,6 @@
 # VoiceInk
 
-macOS 菜单栏语音输入法。基于 Whisper 本地运行——不依赖云端，不需要订阅，不污染剪贴板。
+macOS 菜单栏语音输入法。可选 Apple 本地语音引擎，或任意 OpenAI 兼容转写 API——不污染剪贴板，不锁定供应商。
 
 [English](README.md)
 
@@ -10,9 +10,9 @@ macOS 菜单栏语音输入法。基于 Whisper 本地运行——不依赖云�
 
 ### 双转写引擎
 
-- **Whisper**（基于 [whisper.cpp](https://github.com/ggerganov/whisper.cpp)）—— 高精度离线转写，支持多种模型大小（Tiny → Large v3）
-- **Apple Speech** —— 零配置即用，使用 macOS 内置语音识别
-- 短句模式和长文模式可独立选择引擎
+- **Apple Speech** —— 本地、零配置、实时、免费
+- **OpenAI 兼容 API** —— 对接任意 OpenAI 兼容的 `/audio/transcriptions` 端点（OpenAI `gpt-4o-mini-transcribe` / `whisper-1`、Groq、自建服务等）
+- 短句模式和长文（长文模式）可独立选择引擎
 
 ### 大模型纠错
 
@@ -44,7 +44,7 @@ macOS 菜单栏语音输入法。基于 Whisper 本地运行——不依赖云�
 ### 用户词典
 
 - 添加专业术语、产品名、专有名词
-- 词条同时作用于 Whisper 识别引导（initial prompt）
+- 词条同时通过 OpenAI `prompt` 参数注入,引导转写引擎识别
 - 词条注入 LLM 系统提示词，作为优先词汇
 
 ### 零剪贴板污染
@@ -70,7 +70,7 @@ macOS 菜单栏语音输入法。基于 Whisper 本地运行——不依赖云�
 
 - macOS 14.0+
 - 麦克风和辅助功能权限
-- Whisper 模型（在设置中下载）
+- （可选）OpenAI 兼容转写 API key —— 仅在选择 OpenAI 引擎时需要;Apple Speech 离线即用，无需配置
 - （可选）OpenAI 兼容 API，用于大模型纠错
 
 ---
@@ -92,7 +92,7 @@ cp -R VoiceInk.app /Applications/
 
 1. 启动 VoiceInk —— 出现在菜单栏
 2. 根据提示授予麦克风和辅助功能权限
-3. 在设置中下载 Whisper 模型
+3. 在设置中选择转写引擎 —— Apple Speech 无需配置；OpenAI 需要填 base URL 和 API key
 4. **按住右 Option** 录音，松开即转写
 5. 转写后 **短按** 可手动纠错
 6. **双击** 进入长文模式

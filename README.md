@@ -1,6 +1,6 @@
 # VoiceInk
 
-A macOS menu bar app for voice-to-text input. Runs entirely on-device with Whisper — no cloud, no subscription, no clipboard pollution.
+A macOS menu bar app for voice-to-text input. Choose between Apple's on-device Speech engine or any OpenAI-compatible transcription API — no clipboard pollution, no lock-in.
 
 [中文文档](README_CN.md)
 
@@ -10,9 +10,9 @@ A macOS menu bar app for voice-to-text input. Runs entirely on-device with Whisp
 
 ### Dual Transcription Engine
 
-- **Whisper** (via [whisper.cpp](https://github.com/ggerganov/whisper.cpp)) — high-accuracy offline transcription with multiple model sizes (Tiny → Large v3)
-- **Apple Speech** — zero-setup fallback using macOS built-in speech recognition
-- Choose engine independently for short sentence and long text modes
+- **Apple Speech** — on-device, zero-setup, real-time, free
+- **OpenAI-compatible API** — `/audio/transcriptions` against any OpenAI-compatible endpoint (OpenAI `gpt-4o-mini-transcribe` / `whisper-1`, Groq, self-hosted, etc.)
+- Choose engine independently for short sentence and long text (composing) modes
 
 ### LLM Error Correction
 
@@ -44,7 +44,7 @@ A macOS menu bar app for voice-to-text input. Runs entirely on-device with Whisp
 ### User Dictionary
 
 - Add domain-specific terms, product names, proper nouns
-- Terms bias Whisper recognition via initial prompt
+- Terms bias the transcription engine via its initial prompt (OpenAI `prompt` parameter)
 - Terms are injected into LLM system prompt as preferred vocabulary
 
 ### Zero Clipboard Pollution
@@ -70,7 +70,7 @@ Simplified Chinese · English · Traditional Chinese · Japanese · Korean
 
 - macOS 14.0+
 - Microphone & Accessibility permissions
-- A Whisper model (downloaded from Settings)
+- (Optional) OpenAI-compatible API key for transcription — only required if you choose the OpenAI engine; Apple Speech works offline with no setup
 - (Optional) OpenAI-compatible API for LLM correction
 
 ---
@@ -92,7 +92,7 @@ cp -R VoiceInk.app /Applications/
 
 1. Launch VoiceInk — it appears in the menu bar
 2. Grant microphone and accessibility permissions when prompted
-3. Download a Whisper model from Settings
+3. In Settings, pick an engine — Apple Speech needs nothing; OpenAI needs a base URL + API key
 4. **Hold Right Option** to record, release to transcribe
 5. **Short tap** after transcription to correct errors
 6. **Double tap** to enter composing mode for long text
